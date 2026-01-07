@@ -16,7 +16,18 @@ export default function Providers({ children }: { children: React.ReactNode }) {
       <ConvexProviderWithClerk client={convex} useAuth={useAuth}>
         {children}
       </ConvexProviderWithClerk>
-      <Toaster richColors />
+      <Toaster 
+        richColors 
+        position="top-center" 
+        toastOptions={{
+          duration: 3000,
+          style: {
+            background: 'rgba(15, 23, 42, 0.95)',
+            border: '1px solid rgba(51, 65, 85, 0.5)',
+            color: '#e2e8f0',
+          },
+        }}
+      />
     </ThemeProvider>
   );
 }

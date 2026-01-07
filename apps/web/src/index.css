@@ -113,6 +113,8 @@
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-scan: scan 2s linear infinite;
 }
 
 @layer base {
@@ -125,4 +127,24 @@
   html {
     @apply font-sans;
   }
+}
+
+@keyframes scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+/* Custom Sonner Styles */
+[data-sonner-toaster][data-position="bottom-left"] {
+  left: 6.5rem !important; /* Increased offset to clearly clear the Help button (which ends at 4.5rem) */
+  bottom: 2rem !important;
+}
+
+[data-sonner-toast] {
+  transition: transform 0.4s ease, opacity 0.4s ease, height 0.4s ease !important;
+}
+
+[data-sonner-toast][data-removed="true"] {
+  transform: translateY(100%) !important;
+  opacity: 0 !important;
 }

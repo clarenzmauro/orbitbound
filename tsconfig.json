@@ -1,0 +1,3 @@
+{
+  "extends": "@orbitbound/config/tsconfig.base.json"
+}

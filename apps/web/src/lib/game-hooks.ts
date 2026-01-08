@@ -252,12 +252,13 @@ export function useSpawnableUnits(playerId: Id<"players"> | undefined, buildingI
   return useMemo(() => {
     if (!units) return [];
     return units
-      .filter(u => u.techUnlocked)
+      // .filter(u => u.techUnlocked) // Filter removed for debugging
       .map(u => ({
         unitType: u.type,
         name: u.name,
         cost: u.cost,
         canAfford: u.canAfford,
+        techUnlocked: u.techUnlocked,
         stats: u.stats,
       }));
   }, [units]);

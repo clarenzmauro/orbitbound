@@ -13,8 +13,14 @@ import {
   FACTION_DEFS,
   COMBAT,
   UNIT_DEFS,
+  TERRAIN_DEFS,
+  WEATHER_DEFS,
 } from "./lib/constants";
-import type { ResourceKey, FactionId } from "./lib/constants";
+import type { ResourceKey, FactionId, WeatherType } from "./lib/constants";
+
+import { findNearestFog } from "./lib/pathfinding";
+import { revealAround } from "./lib/vision";
+import { directionToDelta } from "./units";
 
 export const collectResource = mutation({
   args: {
@@ -66,6 +72,94 @@ export const endTurn = mutation({
   handler: async (ctx, args) => {
     const game = await getGameOrThrow(ctx, args.gameId);
     assertPlayerTurn(game, args.playerId);
+
+    // ─── Auto-Explore Logic ──────────────────────────────────────────────
+    // Process auto-exploring units for the current player before ending turn
+    const units = await ctx.db
+      .query("units")
+      .withIndex("by_player", (q) => q.eq("playerId", args.playerId))
+      .collect();
+
+    let mapUpdated = false;
+    const mapCopy = [...game.map];
+    const unitsToPatch = [];
+
+    for (const unit of units) {
+      if (unit.autoExplore && unit.movesLeft > 0) {
+        const unitDef = UNIT_DEFS[unit.type];
+        if (!unitDef) continue;
+        
+        let moves = unit.movesLeft;
+        let currentX = unit.x;
+        let currentY = unit.y;
+        
+        // Try to use all moves to explore
+        while (moves > 0) {
+          // Find direction to nearest fog
+          const nextDir = findNearestFog(
+            currentX,
+            currentY,
+            mapCopy,
+            game.width,
+            game.height,
+            args.playerId,
+            unitDef.canFly
+          );
+
+          if (!nextDir) break; // No reachable fog or path found
+
+          const { dx, dy } = directionToDelta(nextDir);
+          const nextX = wrapX(currentX + dx, game.width);
+          const nextY = clampY(currentY + dy, game.height);
+
+          const fromIdx = coordToIndex(game.width, currentX, currentY);
+          const toIdx = coordToIndex(game.width, nextX, nextY);
+          
+          const targetTile = mapCopy[toIdx];
+          const terrainDef = TERRAIN_DEFS[targetTile.type] ?? TERRAIN_DEFS.surface;
+          const moveCost = unitDef.canFly ? 1 : terrainDef.moveCost;
+
+          // Check if we can afford the move
+          if (moves < moveCost) break;
+
+          // Check occupation (simple check against map state)
+          // Note: Does not account for other units moving in this loop unless we update mapCopy unitIds
+          if (targetTile.unitId && targetTile.unitId !== unit._id) break;
+
+          // Execute move locally
+          mapCopy[fromIdx] = { ...mapCopy[fromIdx], unitId: undefined };
+          mapCopy[toIdx] = { ...mapCopy[toIdx], unitId: unit._id };
+          
+          currentX = nextX;
+          currentY = nextY;
+          moves -= moveCost;
+          mapUpdated = true;
+
+          // Reveal vision
+          if (unitDef.vision) {
+            revealAround({ ...game, map: mapCopy }, mapCopy, args.playerId, currentX, currentY, unitDef.vision);
+          }
+        }
+
+        // If unit moved, queue update
+        if (currentX !== unit.x || currentY !== unit.y) {
+          unitsToPatch.push(
+            ctx.db.patch(unit._id, {
+              x: currentX,
+              y: currentY,
+              movesLeft: 0, // Consumed moves for turn (or set to 'moves' but we reset them after anyway)
+            })
+          );
+        }
+      }
+    }
+
+    // Apply map updates if any exploration happened
+    if (mapUpdated) {
+      await ctx.db.patch(game._id, { map: mapCopy });
+      await Promise.all(unitsToPatch);
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     if (game.playerOrder.length === 0) {
       throw new Error("No players in game");
@@ -155,6 +249,62 @@ export const endTurn = mutation({
       });
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Weather Cycle
+    // ─────────────────────────────────────────────────────────────────────
+    // Only process weather when the round ends (i.e., back to Player 0)
+    if (nextIndex === 0) {
+      if (game.activeWeather) {
+        // Decrease duration
+        const nextDuration = game.activeWeather.turnsRemaining - 1;
+        if (nextDuration <= 0) {
+          // Weather clears
+           await ctx.db.patch(game._id, { activeWeather: undefined });
+        } else {
+           await ctx.db.patch(game._id, { activeWeather: { ...game.activeWeather, turnsRemaining: nextDuration } });
+        }
+      } else {
+        // Chance to start new weather (20% after turn 5)
+        if (game.turn >= 5 && Math.random() < 0.2) {
+          const weatherTypes = Object.keys(WEATHER_DEFS) as WeatherType[];
+          const type = weatherTypes[Math.floor(Math.random() * weatherTypes.length)];
+          const def = WEATHER_DEFS[type];
+          if (!def) throw new Error("Weather def not found"); // Should not happen
+          
+          const duration = Math.floor(Math.random() * (def.duration[1] - def.duration[0] + 1)) + def.duration[0];
+          
+          await ctx.db.patch(game._id, {
+            activeWeather: { type, turnsRemaining: duration }
+          });
+        }
+      }
+
+      // ─────────────────────────────────────────────────────────────────────
+      // Weather Effects (Acid Rain Damage)
+      // ─────────────────────────────────────────────────────────────────────
+      if (game.activeWeather?.type === "acid_rain") {
+        const allUnits = await ctx.db.query("units").collect();
+        const damagePromises = [];
+        
+        for (const u of allUnits) {
+          const tileIdx = coordToIndex(game.width, u.x, u.y);
+          const tile = game.map[tileIdx];
+          
+          // Units safe in cities/bunkers
+          if (tile.buildingId) {
+             const building = await ctx.db.get(tile.buildingId);
+             if (building && (building.type === "city" || building.type === "bunker")) continue;
+          }
+          
+          // Apply Damage
+          damagePromises.push(ctx.db.patch(u._id, { hp: Math.max(1, u.hp - 2) }));
+        }
+        await Promise.all(damagePromises);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+
     return {
       activePlayerIndex: nextIndex,
       income,
@@ -188,6 +338,9 @@ const calculateIncome = async (
   for (const building of buildings) {
     const def = BUILDING_DEFS[building.type];
     if (!def) continue;
+
+    if (building.isConstructing) continue;
+
     for (const key of Object.keys(def.income) as ResourceKey[]) {
       let value = def.income[key] ?? 0;
 
@@ -202,6 +355,12 @@ const calculateIncome = async (
 
       total[key] += value;
     }
+  }
+
+  // Weather Modifier: Solar Flare
+  const game = await ctx.db.get(player.gameId);
+  if (game?.activeWeather?.type === "solar_flare") {
+    total.flux = Math.floor(total.flux * 1.5);
   }
 
   return total;

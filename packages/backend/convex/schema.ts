@@ -20,6 +20,10 @@ export default defineSchema({
     ),
     playerOrder: v.array(v.id("players")),
     createdAt: v.number(),
+    activeWeather: v.optional(v.object({
+      type: v.string(), // "dust_storm" | "solar_flare" | "acid_rain" | "clear_skies"
+      turnsRemaining: v.number(),
+    })),
   }).index("by_status", ["status"]),
 
   players: defineTable({
@@ -57,6 +61,7 @@ export default defineSchema({
     maxMoves: v.number(),
     entrenched: v.optional(v.boolean()), // Marine entrench ability
     buildsLeft: v.optional(v.number()), // Worker building uses remaining (starts at 3)
+    autoExplore: v.optional(v.boolean()), // Rover auto-explore mode
   })
     .index("by_game", ["gameId"])
     .index("by_player", ["playerId"]),

@@ -20,12 +20,14 @@ import type * as healthCheck from "../healthCheck.js";
 import type * as lib_constants from "../lib/constants.js";
 import type * as lib_gameHelpers from "../lib/gameHelpers.js";
 import type * as lib_grid from "../lib/grid.js";
+import type * as lib_pathfinding from "../lib/pathfinding.js";
 import type * as lib_resources from "../lib/resources.js";
 import type * as lib_vision from "../lib/vision.js";
 import type * as players from "../players.js";
 import type * as privateData from "../privateData.js";
 import type * as tech from "../tech.js";
 import type * as units from "../units.js";
+import type * as userGames from "../userGames.js";
 import type * as world from "../world.js";
 
 import type {
@@ -47,12 +49,14 @@ declare const fullApi: ApiFromModules<{
   "lib/constants": typeof lib_constants;
   "lib/gameHelpers": typeof lib_gameHelpers;
   "lib/grid": typeof lib_grid;
+  "lib/pathfinding": typeof lib_pathfinding;
   "lib/resources": typeof lib_resources;
   "lib/vision": typeof lib_vision;
   players: typeof players;
   privateData: typeof privateData;
   tech: typeof tech;
   units: typeof units;
+  userGames: typeof userGames;
   world: typeof world;
 }>;
 

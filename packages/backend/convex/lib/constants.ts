@@ -78,9 +78,13 @@ export const TERRAIN_DEFS: Record<
   sky: { moveCost: 1, passable: true, airOnly: true },
   cloud: { moveCost: 1, passable: true, airOnly: true },
   surface: { moveCost: 1, passable: true },
+  grass: { moveCost: 1, passable: true },
+  sand: { moveCost: 1, passable: true },
   dirt: { moveCost: 1, passable: true },
   stone: { moveCost: 2, passable: true },
   deepstone: { moveCost: 2, passable: true },
+  crystal: { moveCost: 2, passable: true },
+  cavern: { moveCost: 1, passable: true },
   bedrock: { moveCost: Infinity, passable: false },
   water: { moveCost: 2, passable: true },
   magma: { moveCost: 1, passable: true, hazard: true },
@@ -236,7 +240,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     cost: {}, // Founded by Lander (instant)
     providesVision: 3,
     canSpawnUnits: true,
-    spawnableUnits: ["worker", "marine", "rover"],
+    spawnableUnits: ["worker"],
     turnsToComplete: 0, // Instant
   },
   barracks: {
@@ -245,7 +249,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     income: {},
     cost: { ore: 15 },
     canSpawnUnits: true,
-    spawnableUnits: ["marine"],
+    spawnableUnits: ["marine", "rover"],
     requiredTech: "militarization",
     turnsToComplete: 1, // 1 turn
   },
@@ -365,8 +369,8 @@ export const TECH_DEFS: Record<string, TechDef> = {
   },
   heat_shield: {
     name: "Heat Shield",
-    tier: 2,
-    cost: 50,
+    tier: 3,
+    cost: 100,
     prerequisites: ["deep_core"],
     unlocks: [],
     description: "Allows units to cross Magma tiles safely.",
@@ -418,4 +422,67 @@ export const COMBAT = {
   ENTRENCH_BONUS: 2, // +2 Def for entrenched Marine
   REGEN_HP_PER_TURN: 2, // Xeno Hive regeneration
 };
+
+export const DIRECTIONS = ["L", "R", "U", "D"] as const;
+export type Direction = (typeof DIRECTIONS)[number];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ruins Rewards
+// ─────────────────────────────────────────────────────────────────────────────
+export type RuinRewardType = "resource" | "tech" | "unit" | "map";
+
+export const RUIN_REWARDS: {
+  weight: number;
+  type: RuinRewardType;
+  // Payload definition depends on type
+  resource?: Partial<Record<ResourceKey, number>>;
+  techPoints?: number; // Free research progress or random tech
+  unitType?: string;
+  visionRadius?: number;
+  message: string;
+}[] = [
+  // Rare: Full Map Reveal or Tech
+  { weight: 10, type: "map", visionRadius: 10, message: "Downloaded high-res satellite data! (Map Reveal)" },
+  { weight: 5, type: "tech", techPoints: 50, message: "Recovered intact research logs! (+50 Flux)" }
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Weather Events
+// ─────────────────────────────────────────────────────────────────────────────
+export type WeatherType = "dust_storm" | "solar_flare" | "acid_rain" | "clear_skies";
+
+export interface WeatherDef {
+  name: string;
+  description: string;
+  duration: [number, number]; // Min, Max turns
+  effectDesc: string;
+}
+
+export const WEATHER_DEFS: Record<WeatherType, WeatherDef> = {
+  dust_storm: {
+    name: "Dust Storm",
+    description: "Visibility reduced by thick dust clouds.",
+    duration: [2, 3],
+    effectDesc: "-1 Vision Range for all units.",
+  },
+  solar_flare: {
+    name: "Solar Flare",
+    description: "High radiation levels detected.",
+    duration: [1, 2],
+    effectDesc: "+50% Flux Income. Air units grounded.",
+  },
+  acid_rain: {
+    name: "Acid Rain",
+    description: "Corrosive rain damaging exposed equipment.",
+    duration: [2, 3],
+    effectDesc: "-2 HP/turn to units outside cities/bunkers.",
+  },
+  clear_skies: {
+    name: "Clear Skies",
+    description: "Optimal atmospheric conditions.",
+    duration: [2, 4],
+    effectDesc: "+1 Vision Range for all units.",
+  },
+};
+
 

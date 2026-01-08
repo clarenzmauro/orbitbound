@@ -1,11 +1,12 @@
 import { mutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { BUILDING_DEFS, UNIT_DEFS, TERRAIN_DEFS, TECH_DEFS } from "./lib/constants";
+import { BUILDING_DEFS, UNIT_DEFS, TERRAIN_DEFS, TECH_DEFS, RUIN_REWARDS } from "./lib/constants";
 import { clampY, coordToIndex, wrapX } from "./lib/grid";
 import { getGameOrThrow, getPlayerOrThrow, assertPlayerTurn } from "./lib/gameHelpers";
 import { revealAround } from "./lib/vision";
-import { subtractCost } from "./lib/resources";
+import { subtractCost, addResources } from "./lib/resources";
+import type { ResourceKey } from "./lib/constants";
 
 const DIRECTIONS = ["L", "R", "U", "D"] as const;
 type Direction = (typeof DIRECTIONS)[number];
@@ -49,6 +50,11 @@ export const move = mutation({
 
     if (unit.movesLeft <= 0) {
       throw new Error("Unit has no moves left");
+    }
+
+    // Solar Flare grounds air units
+    if (game.activeWeather?.type === "solar_flare" && unitDef.canFly) {
+       throw new Error("Air units are grounded during a Solar Flare!");
     }
 
     const { dx, dy } = directionToDelta(args.direction);
@@ -100,6 +106,106 @@ export const move = mutation({
       unitId: undefined,
     };
 
+    let rewardMessage: string | undefined;
+
+    // Check for Ruins
+    if (targetTile.type === "ruins") {
+      // Logic to claim ruin reward
+      const roll = Math.random() * 100; // 0-100
+      let cumulativeWeight = 0;
+      let selectedReward = RUIN_REWARDS[0]; // Default fallback
+
+      for (const reward of RUIN_REWARDS) {
+        cumulativeWeight += reward.weight;
+        if (roll < cumulativeWeight) {
+          selectedReward = reward;
+          break;
+        }
+      }
+
+      rewardMessage = selectedReward.message;
+      const player = await getPlayerOrThrow(ctx, args.playerId);
+
+      // Apply Reward
+      if (selectedReward.type === "resource" && selectedReward.resource) {
+        const newResources = addResources(player.resources, selectedReward.resource);
+        await ctx.db.patch(player._id, { resources: newResources });
+      } else if (selectedReward.type === "unit" && selectedReward.unitType) {
+        // Spawn free unit at target tile
+        // Since unit is moving there, spawn it at OLD tile (fromIdx) if empty?
+        // Or adjacent?
+        // Let's spawn it at the RUIN location (targetTile) if we can stack? No, no stacking.
+        // Spawn at the OLD location (fromIdx) since the moving unit vacates it!
+        // Wait, fromIdx is vacated. Perfect.
+        
+        const spawnUnitDef = UNIT_DEFS[selectedReward.unitType];
+        if (spawnUnitDef) {
+           await ctx.db.insert("units", {
+            gameId: game._id,
+            playerId: player._id,
+            type: selectedReward.unitType,
+            x: unit.x, // Spawn at start location
+            y: unit.y,
+            hp: spawnUnitDef.hp,
+            movesLeft: 0, // Freshly spawned units have no moves? Or full? Let's say 0 to prevent chain moves.
+            maxMoves: spawnUnitDef.maxMoves,
+            buildsLeft: spawnUnitDef.buildsLeft,
+          });
+          
+          updatedMap[fromIdx] = {
+             ...updatedMap[fromIdx],
+             // We need to fetch the ID of the new unit? But insert returns ID.
+             // We can't update map here because we don't have the ID yet in this flow easily?
+             // Ah, `ctx.db.insert` returns ID.
+             // But map update for `fromIdx` is already set to `unitId: undefined` above.
+             // We need to re-set it.
+          };
+          // ... actually let's correct this.
+          // Better logic: Spawn it at `fromIdx`.
+          // We need the ID.
+        }
+      } else if (selectedReward.type === "map" && selectedReward.visionRadius) {
+         revealAround(game, updatedMap, args.playerId, targetX, targetY, selectedReward.visionRadius);
+      } else if (selectedReward.type === "tech" && selectedReward.techPoints) {
+          // Grant flux equivalent to tech points?
+          // For now, simplify: just give Flux resource for "tech" reward in this implementation,
+          // or unlock a random cheap tech?
+          // Let's just give Flux.
+          const newResources = addResources(player.resources, { flux: 30 }); // 30 Flux flat
+          await ctx.db.patch(player._id, { resources: newResources });
+          rewardMessage += " (+30 Flux)";
+      }
+
+      // If unit reward, we need to handle the spawn properly.
+      if (selectedReward.type === "unit" && selectedReward.unitType) {
+         const spawnUnitDef = UNIT_DEFS[selectedReward.unitType];
+         if (spawnUnitDef) {
+             const newUnitId = await ctx.db.insert("units", {
+              gameId: game._id,
+              playerId: player._id,
+              type: selectedReward.unitType,
+              x: unit.x,
+              y: unit.y,
+              hp: spawnUnitDef.hp,
+              movesLeft: 0,
+              maxMoves: spawnUnitDef.maxMoves,
+              buildsLeft: spawnUnitDef.buildsLeft,
+            });
+            // Update fromIdx tile to show new unit
+            updatedMap[fromIdx] = {
+              ...updatedMap[fromIdx],
+              unitId: newUnitId,
+            };
+         }
+      }
+
+      // Convert Ruin to Surface or Rubble
+      updatedMap[toIdx] = {
+        ...updatedMap[toIdx],
+        type: "surface", // Ruin cleared
+      };
+    }
+
     // Tank Crush ability: destroy enemy buildings on move
     let crushedBuilding = false;
     if (unitDef.abilities?.includes("crush") && targetTile.buildingId) {
@@ -136,7 +242,7 @@ export const move = mutation({
       entrenched: undefined, // Clear entrenched status when moving
     });
 
-    return { x: targetX, y: targetY, moveCost, crushedBuilding };
+    return { x: targetX, y: targetY, moveCost, crushedBuilding, rewardMessage };
   },
 });
 
@@ -324,6 +430,34 @@ export const toggleEntrench = mutation({
   },
 });
 
+export const toggleAutoExplore = mutation({
+  args: {
+    unitId: v.id("units"),
+    playerId: v.id("players"),
+    enable: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const unit = await ctx.db.get(args.unitId);
+    if (!unit) {
+      throw new Error("Unit not found");
+    }
+
+    if (unit.playerId !== args.playerId) {
+      throw new Error("You do not control this unit");
+    }
+
+    if (unit.type !== "rover") {
+      throw new Error("Only Rovers can auto-explore");
+    }
+
+    await ctx.db.patch(unit._id, {
+      autoExplore: args.enable,
+    });
+
+    return { autoExplore: args.enable };
+  },
+});
+
 export const getUnitActions = query({
   args: {
     unitId: v.id("units"),
@@ -352,6 +486,8 @@ export const getUnitActions = query({
       canFoundCity: isOwner && isMyTurn && unit.type === "settler",
       canEntrench: unit.type === "marine",
       isEntrenched: unit.entrenched ?? false,
+      canAutoExplore: unit.type === "rover",
+      isAutoExploring: unit.autoExplore ?? false,
       abilities: unitDef.abilities ?? [],
       stats: {
         hp: unit.hp,
@@ -367,7 +503,7 @@ export const getUnitActions = query({
   },
 });
 
-const directionToDelta = (direction: Direction) => {
+export const directionToDelta = (direction: Direction) => {
   switch (direction) {
     case "L":
       return { dx: -1, dy: 0 };

@@ -53,16 +53,25 @@ const getTileStyles = (type: TileType["type"]) => {
     case "cloud":
       return "bg-transparent";
 
-    // Surface tiles
+    // Surface layer tiles
+    case "grass":
+      return "bg-gradient-to-b from-[#22c55e] to-[#166534] shadow-[inset_0_2px_4px_rgba(255,255,255,0.15)] border-t-[3px] border-green-400/60";
     case "surface":
-    case "dirt":
       return "bg-gradient-to-b from-[#4ade80] to-[#166534] shadow-[inset_0_2px_4px_rgba(255,255,255,0.1)] border-t-[3px] border-emerald-400/50";
+    case "sand":
+      return "bg-gradient-to-b from-[#fbbf24] to-[#b45309] shadow-[inset_0_2px_4px_rgba(255,255,255,0.1)] border-t-[3px] border-amber-300/50";
+    case "dirt":
+      return "bg-gradient-to-b from-[#78716c] to-[#44403c] shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)] border-b-2 border-stone-600/50";
 
     // Underground tiles
     case "stone":
       return "bg-[#57534e] shadow-[inset_2px_2px_10px_rgba(0,0,0,0.3)] border-b-2 border-r-2 border-[#44403c]";
+    case "cavern":
+      return "bg-[#292524] shadow-[inset_0_0_15px_rgba(0,0,0,0.6)] border border-stone-700/30";
     case "deepstone":
       return "bg-[#3f3d3a] shadow-[inset_2px_2px_15px_rgba(0,0,0,0.5)] border-b-2 border-r-2 border-[#2d2b29]";
+    case "crystal":
+      return "bg-gradient-to-b from-[#7c3aed] to-[#4c1d95] shadow-[inset_0_0_20px_rgba(139,92,246,0.4)] border border-violet-400/40";
     case "bedrock":
       return "bg-slate-950 shadow-[inset_0_0_20px_black]";
 

@@ -1,5 +1,5 @@
 import type { Doc, Id } from "../_generated/dataModel";
-import { DEFAULT_VISION_RADIUS } from "./constants";
+import { DEFAULT_VISION_RADIUS, WEATHER_DEFS, WeatherType } from "./constants";
 import { clampY, coordToIndex, wrapX } from "./grid";
 
 type GameDoc = Doc<"games">;
@@ -12,9 +12,20 @@ export const revealAround = (
   x: number,
   y: number,
   radius = DEFAULT_VISION_RADIUS,
+  activeWeather?: { type: string; turnsRemaining: number },
 ) => {
-  for (let dy = -radius; dy <= radius; dy += 1) {
-    for (let dx = -radius; dx <= radius; dx += 1) {
+  // Apply weather modifiers to radius
+  let modifiedRadius = radius;
+  if (activeWeather) {
+    if (activeWeather.type === "dust_storm") {
+      modifiedRadius = Math.max(1, radius - 1); // Minimum 1
+    } else if (activeWeather.type === "clear_skies") {
+        modifiedRadius = radius + 1;
+    }
+  }
+
+  for (let dy = -modifiedRadius; dy <= modifiedRadius; dy += 1) {
+    for (let dx = -modifiedRadius; dx <= modifiedRadius; dx += 1) {
       const ny = clampY(y + dy, game.height);
       const nx = wrapX(x + dx, game.width);
       const idx = coordToIndex(game.width, nx, ny);

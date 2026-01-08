@@ -10,10 +10,14 @@ import {
   ChevronLeft, ChevronRight, Crosshair, Home, ArrowRight, Loader2,
   Swords, Shield, Factory, Wheat, Pickaxe, Sun, Rocket, X, Zap,
   FlaskConical, Users, Building2, Target, Info, Keyboard, TrendingUp,
-  Heart, Move, Eye, CircleDot, HelpCircle, Bot, Hammer
+  Heart, Move, Eye, CircleDot, HelpCircle, Bot, Hammer, Compass, Lock
 } from "lucide-react";
 import { useGameActions, useTechTree, useSpawnableUnits, useBuildableBuildings, useWorkerBuildableBuildings } from "@/lib/game-hooks";
+import { useMutation } from "convex/react";
+import { api } from "@orbitbound/backend/convex/_generated/api";
 import type { Id } from "@orbitbound/backend/convex/_generated/dataModel";
+import { TechTreeModal } from "./tech-tree-modal";
+import { WeatherBanner } from "./weather-banner";
 
 interface GameViewProps {
   game: GameState;
@@ -23,7 +27,9 @@ interface GameViewProps {
   allPlayers: Player[];
 }
 
-const VIEWPORT_WIDTH = 26;
+const MIN_TILE_SIZE = 24;
+const MAX_TILE_SIZE = 64;
+const HUD_PADDING = 120; // Space for resource bar and bottom UI
 
 // Unit definitions for display
 const UNIT_INFO: Record<string, { desc: string; biomass?: number; ore?: number; flux?: number }> = {
@@ -47,11 +53,11 @@ const UNIT_STATS: Record<string, { atk: number; def: number; range: number; visi
   gunship: { atk: 10, def: 2, range: 1, vision: 4 },
 };
 
-const BUILDING_INFO: Record<string, { desc: string; income?: string; biomass?: number; ore?: number; flux?: number }> = {
+const BUILDING_INFO: Record<string, { desc: string; income?: string; biomass?: number; ore?: number; flux?: number; idealTerrain?: string[]; idealResource?: string }> = {
   city: { desc: "Your headquarters. Spawns units and builds structures.", income: "+2 Biomass, +2 Ore" },
-  farm: { desc: "Agricultural production on surface/dirt.", income: "+2 Biomass", ore: 10 },
-  mine: { desc: "Extract ore from deposits.", income: "+2 Ore", biomass: 10 },
-  solar_array: { desc: "Generate flux energy.", income: "+1 Flux", ore: 15 },
+  farm: { desc: "Agricultural production on surface/dirt.", income: "+2 Biomass", ore: 10, idealTerrain: ["grass", "dirt", "surface"] },
+  mine: { desc: "Extract ore from deposits.", income: "+2 Ore", biomass: 10, idealTerrain: ["stone", "rock"], idealResource: "ore" },
+  solar_array: { desc: "Generate flux energy.", income: "+1 Flux", ore: 15, idealTerrain: ["sky", "surface", "grass"] },
   bunker: { desc: "Defensive structure. +5 DEF to units.", ore: 20 },
   barracks: { desc: "Train infantry units.", ore: 15 },
   factory: { desc: "Produce heavy vehicles.", ore: 30 },
@@ -61,9 +67,42 @@ const BUILDING_INFO: Record<string, { desc: string; income?: string; biomass?: n
 
 export function GameView({ game, player, units, buildings, allPlayers }: GameViewProps) {
   const [cameraX, setCameraX] = useState(0);
+  const [cameraY, setCameraY] = useState(0);
   const [selectedTileId, setSelectedTileId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [hasInitializedCamera, setHasInitializedCamera] = useState(false);
+  const hasInitializedCamera = React.useRef(false);
+
+  // Fixed tile size with dynamic viewport calculations
+  const TILE_SIZE = 64;
+  const [viewportWidth, setViewportWidth] = useState(20);
+  const [viewportHeight, setViewportHeight] = useState(12);
+  const [needsVerticalScroll, setNeedsVerticalScroll] = useState(false);
+
+  // Calculate viewport dimensions based on screen size
+  useEffect(() => {
+    const calculateDimensions = () => {
+      const screenHeight = window.innerHeight;
+      const screenWidth = window.innerWidth;
+
+      // Calculate how many tiles fit on screen
+      const availableHeight = screenHeight - HUD_PADDING;
+      const availableWidth = screenWidth - 160; // Padding for nav buttons
+
+      const visibleRows = Math.floor(availableHeight / TILE_SIZE);
+      const visibleCols = Math.floor(availableWidth / TILE_SIZE);
+
+      setViewportWidth(Math.max(10, visibleCols));
+      setViewportHeight(Math.min(visibleRows, game.height));
+      setNeedsVerticalScroll(visibleRows < game.height);
+    };
+
+    calculateDimensions();
+    window.addEventListener('resize', calculateDimensions);
+    return () => window.removeEventListener('resize', calculateDimensions);
+  }, [game.height]);
+
+  // Use fixed tile size
+  const tileSize = TILE_SIZE;
 
   // UI State
   const [showTechTree, setShowTechTree] = useState(false);
@@ -74,6 +113,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
   const [showHelp, setShowHelp] = useState(false);
 
   const actions = useGameActions();
+  const toggleAutoExplore = useMutation(api.units.toggleAutoExplore);
   const techTree = useTechTree(player._id as Id<"players">);
   const { notifications, dismissNotification, notify } = useGameNotifications();
 
@@ -130,6 +170,8 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
     let biomass = 0, ore = 0, flux = 0;
 
     for (const b of playerBuildings) {
+      if (b.isConstructing) continue;
+
       if (b.type === "city") { biomass += 2; ore += 2; }
       if (b.type === "farm") { biomass += 2; }
       if (b.type === "mine") { ore += 2; }
@@ -138,6 +180,83 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
     return { biomass, ore, flux };
   }, [buildings, player._id]);
+
+  // Filter and sort buildings contextually based on current tile
+  const contextualBuildings = useMemo(() => {
+    const tileType = selectedTile?.type;
+    const tileResource = selectedTile?.resource;
+
+    // Score each building based on relevance to current tile
+    const scoredBuildings = workerBuildableBuildings.map(building => {
+      const info = BUILDING_INFO[building.buildingType];
+      let relevanceScore = 0;
+      let isRecommended = false;
+
+      // High score if resource matches (e.g., mine on ore deposit)
+      if (info?.idealResource && tileResource === info.idealResource) {
+        relevanceScore += 100;
+        isRecommended = true;
+      }
+
+      // Medium score if terrain matches
+      if (tileType && info?.idealTerrain?.includes(tileType)) {
+        relevanceScore += 50;
+        isRecommended = true;
+      }
+
+      // Bonus for affordability
+      if (building.canAfford) {
+        relevanceScore += 10;
+      }
+
+      return { ...building, relevanceScore, isRecommended };
+    });
+
+    // Sort by relevance score (highest first)
+    const sorted = scoredBuildings.sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+    // Return sorted list (recommended ones are at the top)
+    return sorted;
+  }, [workerBuildableBuildings, selectedTile]);
+
+  // Get list of my units that can move (for cycling)
+  const myMoveableUnits = useMemo(() => {
+    return units
+      .filter(u => u.playerId === player._id && u.movesLeft > 0)
+      .sort((a, b) => a._id.localeCompare(b._id));
+  }, [units, player._id]);
+
+  // Cycle to next/prev unit
+  const cycleUnit = useCallback((direction: 1 | -1) => {
+    if (myMoveableUnits.length === 0) return;
+
+    const currentIndex = selectedUnit ? myMoveableUnits.findIndex(u => u._id === selectedUnit._id) : -1;
+    let nextIndex;
+
+    if (currentIndex === -1) {
+      nextIndex = 0;
+    } else {
+      nextIndex = (currentIndex + direction + myMoveableUnits.length) % myMoveableUnits.length;
+    }
+
+    const nextUnit = myMoveableUnits[nextIndex];
+    if (nextUnit) {
+      // Select the unit by selecting its tile
+      const tileId = `${nextUnit.x}-${nextUnit.y}`;
+      setSelectedTileId(tileId);
+
+      // Center camera on unit
+      const centerOffsetX = Math.floor(viewportWidth / 2);
+      setCameraX((nextUnit.x - centerOffsetX + game.width) % game.width);
+
+      if (needsVerticalScroll) {
+        const centerOffsetY = Math.floor(viewportHeight / 2);
+        const newCameraY = Math.max(0, Math.min(game.height - viewportHeight, nextUnit.y - centerOffsetY));
+        setCameraY(newCameraY);
+      }
+    }
+  }, [myMoveableUnits, selectedUnit, game.width, game.height, viewportWidth, viewportHeight, needsVerticalScroll]);
+
 
   // Helper to get tile at (x, y)
   const getTile = useCallback(
@@ -233,27 +352,54 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
   // Center camera on player's first unit when game loads
   useEffect(() => {
-    if (hasInitializedCamera) return;
+    if (hasInitializedCamera.current) return;
 
     const playerUnit = units.find((u) => u.playerId === player._id);
     const playerBuilding = buildings.find((b) => b.playerId === player._id);
 
     const target = playerUnit || playerBuilding;
     if (target) {
-      const centerOffset = Math.floor(VIEWPORT_WIDTH / 2);
-      const newCameraX = (target.x - centerOffset + game.width) % game.width;
-      setCameraX(newCameraX);
-      setHasInitializedCamera(true);
-    }
-  }, [units, buildings, player._id, game.width, hasInitializedCamera]);
+      // Mark as initialized FIRST to prevent re-runs
+      hasInitializedCamera.current = true;
 
-  // Generate visible columns based on cameraX
+      // Center X
+      const centerOffsetX = Math.floor(viewportWidth / 2);
+      let newCameraX = target.x - centerOffsetX;
+      while (newCameraX < 0) {
+        newCameraX += game.width;
+      }
+      newCameraX = newCameraX % game.width;
+
+      console.log(`[Camera Init] Target at (${target.x}, ${target.y}), centering camera to x=${newCameraX}`);
+      setCameraX(newCameraX);
+
+      // Center Y for large worlds (if vertical scrolling is needed)
+      if (needsVerticalScroll) {
+        const centerOffsetY = Math.floor(viewportHeight / 2);
+        const newCameraY = Math.max(0, Math.min(game.height - viewportHeight, target.y - centerOffsetY));
+        console.log(`[Camera Init] Vertical scroll enabled, centering Y to ${newCameraY}`);
+        setCameraY(newCameraY);
+      }
+
+      // Also select the starting unit's tile so player sees it immediately
+      const startingTile = game.map.find(t => t.x === target.x && t.y === target.y);
+      if (startingTile) {
+        setSelectedTileId(startingTile.id);
+      }
+    }
+  }, [units, buildings, player._id, game.width, game.height, game.map, viewportWidth, viewportHeight, needsVerticalScroll]);
+
+  // Generate visible columns based on cameraX and cameraY
   const visibleColumns: Tile[][] = useMemo(() => {
     const columns: Tile[][] = [];
-    for (let i = 0; i < VIEWPORT_WIDTH; i++) {
+    for (let i = 0; i < viewportWidth; i++) {
       const x = (cameraX + i) % game.width;
       const column: Tile[] = [];
-      for (let y = 0; y < game.height; y++) {
+      // Only render rows visible in vertical viewport
+      const startY = needsVerticalScroll ? cameraY : 0;
+      const endY = needsVerticalScroll ? Math.min(cameraY + viewportHeight, game.height) : game.height;
+
+      for (let y = startY; y < endY; y++) {
         const tile = getTile(x, y);
         if (tile) {
           const isGhost = cameraX + i >= game.width;
@@ -266,7 +412,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
       columns.push(column);
     }
     return columns;
-  }, [cameraX, game.width, game.height, getTile]);
+  }, [cameraX, cameraY, game.width, game.height, getTile, viewportWidth, viewportHeight, needsVerticalScroll]);
 
   // Camera Controls
   const moveCamera = useCallback(
@@ -280,6 +426,21 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
       });
     },
     [game.width]
+  );
+
+  const moveCameraVertical = useCallback(
+    (direction: "up" | "down") => {
+      if (!needsVerticalScroll) return;
+      setCameraY((prev) => {
+        const maxY = game.height - viewportHeight;
+        if (direction === "up") {
+          return Math.max(0, prev - 1);
+        } else {
+          return Math.min(maxY, prev + 1);
+        }
+      });
+    },
+    [needsVerticalScroll, game.height, viewportHeight]
   );
 
   // Keyboard Listeners
@@ -299,20 +460,34 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
       // Camera movement (Arrow keys always work, A/D only when no unit selected)
       if (e.key === "ArrowLeft") moveCamera("left");
       if (e.key === "ArrowRight") moveCamera("right");
+      if (e.key === "ArrowUp") moveCameraVertical("up");
+      if (e.key === "ArrowDown") moveCameraVertical("down");
       if (!canControlUnit) {
         if (e.key === "a" || e.key === "A") moveCamera("left");
         if (e.key === "d" || e.key === "D") moveCamera("right");
+        if (e.key === "w" || e.key === "W") moveCameraVertical("up");
+        if (e.key === "s" || e.key === "S") moveCameraVertical("down");
       }
 
-      // Cancel actions
+      // Cancel actions / Exit game (prioritized)
       if (e.key === "Escape") {
-        setSelectedTileId(null);
-        setAttackMode(false);
-        setBuildingPlacementMode(null);
-        setShowTechTree(false);
-        setShowSpawnMenu(false);
-        setShowBuildMenu(false);
-        setShowHelp(false);
+        // Check if anything is open that can be cancelled
+        const hasOpenUI = selectedTileId || attackMode || buildingPlacementMode || showTechTree || showSpawnMenu || showBuildMenu || showHelp;
+
+        if (hasOpenUI) {
+          // Cancel all open UI
+          setSelectedTileId(null);
+          setAttackMode(false);
+          setBuildingPlacementMode(null);
+          setShowTechTree(false);
+          setShowSpawnMenu(false);
+          setShowBuildMenu(false);
+          setShowHelp(false);
+        } else {
+          // Nothing open, trigger exit game
+          handleExitGame();
+        }
+        return;
       }
 
       // Quick actions
@@ -321,19 +496,33 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
       if (e.key === "e" || e.key === "E") {
         if (isMyTurn && !isLoading) handleEndTurn();
       }
+
+      // Unit Cycling (Tab)
+      if (e.key === "Tab") {
+        e.preventDefault(); // Prevent focus change
+        cycleUnit(e.shiftKey ? -1 : 1);
+      }
+
       // Center camera on selected unit/building
       if (e.key === "c" || e.key === "C") {
         const target = selectedUnit || (selectedBuilding && isMyBuilding ? selectedBuilding : null);
         if (target) {
-          const centerOffset = Math.floor(VIEWPORT_WIDTH / 2);
-          setCameraX((target.x - centerOffset + game.width) % game.width);
+          const centerOffsetX = Math.floor(viewportWidth / 2);
+          setCameraX((target.x - centerOffsetX + game.width) % game.width);
+
+          // Also center Y if vertical scrolling is enabled
+          if (needsVerticalScroll) {
+            const centerOffsetY = Math.floor(viewportHeight / 2);
+            const newCameraY = Math.max(0, Math.min(game.height - viewportHeight, target.y - centerOffsetY));
+            setCameraY(newCameraY);
+          }
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [moveCamera, selectedUnit, isMyUnit, isMyTurn, isLoading, selectedBuilding, isMyBuilding, game.width]);
+  }, [moveCamera, moveCameraVertical, selectedUnit, isMyUnit, isMyTurn, isLoading, selectedBuilding, isMyBuilding, game.width, game.height, selectedTileId, attackMode, buildingPlacementMode, showTechTree, showSpawnMenu, showBuildMenu, showHelp, viewportWidth, viewportHeight, needsVerticalScroll, cycleUnit]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Game Actions
@@ -344,12 +533,20 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
     setIsLoading(true);
     try {
-      await actions.moveUnit(
+      const result = await actions.moveUnit(
         selectedUnit._id as Id<"units">,
         player._id as Id<"players">,
         direction
       );
-      // No notification for movement - too spammy
+
+      // Check for ruin rewards
+      if (result.rewardMessage) {
+        notify.success("Ancient Ruins Explored", result.rewardMessage);
+      }
+
+      if (result.crushedBuilding) {
+        notify.success("Target Destroyed", "Enemy building crushed under treads!");
+      }
     } catch (error) {
       notify.error("Move Failed", error instanceof Error ? error.message : "Cannot move there");
     } finally {
@@ -389,6 +586,12 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
       notify.error("Error", error instanceof Error ? error.message : "Failed to end turn");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleExitGame = () => {
+    if (confirm("Are you sure you want to exit? Your progress will be saved.")) {
+      window.location.href = "/";
     }
   };
 
@@ -604,6 +807,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         isMyTurn={isMyTurn}
         onTechClick={() => setShowTechTree(true)}
         onHelpClick={() => setShowHelp(true)}
+        onExitClick={handleExitGame}
         income={playerIncome}
         cameraPosition={{ x: cameraX, width: game.width }}
       />
@@ -648,6 +852,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
             selectedTileId={selectedTileId}
             highlightedTiles={highlightedTiles}
             currentPlayerId={player._id}
+            tileSize={tileSize}
           />
         </div>
 
@@ -702,7 +907,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
       {/* Selected Tile Context Menu - Bottom Left */}
       {selectedTileId && selectedTile && !attackMode && !buildingPlacementMode && (
-        <div className="fixed left-4 bottom-4 w-[320px] bg-slate-900/98 backdrop-blur-xl border border-slate-700 p-4 rounded-xl shadow-[0_0_50px_rgba(0,0,0,0.5)] z-50 animate-in slide-in-from-bottom-4 ring-1 ring-white/10 max-h-[70vh] overflow-y-auto">
+        <div className="fixed left-4 bottom-4 w-[400px] bg-slate-900/98 backdrop-blur-xl border border-slate-700 p-4 rounded-xl shadow-[0_0_50px_rgba(0,0,0,0.5)] z-50 animate-in slide-in-from-bottom-4 ring-1 ring-white/10 max-h-[70vh] overflow-y-auto">
           <div className="flex items-start justify-between mb-3">
             <div>
               <h3 className="font-bold text-lg text-emerald-400 flex items-center gap-2 font-mono">
@@ -757,15 +962,37 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
               {/* Combat Unit Actions */}
               {selectedUnit.type !== "settler" && selectedUnit.type !== "worker" && selectedUnit.movesLeft > 0 && (
-                <Button
-                  size="sm"
-                  className="w-full text-xs font-mono uppercase bg-red-900/50 text-red-200 hover:bg-red-800 border border-red-500/30"
-                  onClick={() => setAttackMode(true)}
-                  disabled={isLoading}
-                >
-                  <Swords className="w-4 h-4 mr-2" />
-                  Attack Enemy
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    className="w-full text-xs font-mono uppercase bg-red-900/50 text-red-200 hover:bg-red-800 border border-red-500/30 mb-2"
+                    onClick={() => setAttackMode(true)}
+                    disabled={isLoading}
+                  >
+                    <Swords className="w-4 h-4 mr-2" />
+                    Attack Enemy
+                  </Button>
+
+                  {/* Rover Auto-Explore */}
+                  {selectedUnit.type === "rover" && (
+                    <Button
+                      size="sm"
+                      className={`w-full text-xs font-mono uppercase border ${selectedUnit.autoExplore
+                        ? "bg-purple-900/50 text-purple-200 hover:bg-purple-800 border-purple-500/30"
+                        : "bg-cyan-900/50 text-cyan-200 hover:bg-cyan-800 border-cyan-500/30"
+                        }`}
+                      onClick={() => toggleAutoExplore({
+                        unitId: selectedUnit._id as Id<"units">,
+                        playerId: player._id as Id<"players">,
+                        enable: !selectedUnit.autoExplore
+                      })}
+                      disabled={isLoading}
+                    >
+                      <Compass className={`w-4 h-4 mr-2 ${selectedUnit.autoExplore ? "animate-spin" : ""}`} />
+                      {selectedUnit.autoExplore ? "Stop Exploring" : "Auto-Explore"}
+                    </Button>
+                  )}
+                </>
               )}
 
               {/* Settler Actions */}
@@ -795,40 +1022,35 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                       <Hammer className="w-4 h-4 mr-2" />
                       Continue Building ({selectedBuilding.buildProgress ?? 0}/{selectedBuilding.turnsToComplete ?? 1})
                     </Button>
-                  ) : !selectedBuilding && !selectedTile?.buildingId && selectedTile?.type !== "water" && selectedTile?.type !== "bedrock" ? (
+                  ) : !selectedBuilding && !selectedTile?.buildingId && selectedTile?.type !== "water" && selectedTile?.type !== "bedrock" && (selectedUnit.buildsLeft ?? 0) > 0 ? (
                     <>
-                      <Button
-                        size="sm"
-                        className="w-full text-xs font-mono uppercase bg-amber-900/50 text-amber-200 hover:bg-amber-800 border border-amber-500/30"
-                        onClick={() => setShowBuildMenu(!showBuildMenu)}
-                        disabled={isLoading || (selectedUnit.buildsLeft ?? 0) <= 0}
-                      >
-                        <Building2 className="w-4 h-4 mr-2" />
-                        {showBuildMenu ? "Hide Buildings" : "Build Here"}
-                      </Button>
-
-                      {/* Worker Build Menu */}
-                      {showBuildMenu && workerBuildableBuildings.length > 0 && (
+                      {/* Worker Build Menu - Show directly with contextual recommendations */}
+                      {contextualBuildings.length > 0 ? (
                         <div className="bg-slate-800/80 rounded-lg p-3 space-y-2 border border-slate-700/50">
                           <p className="text-xs text-slate-400 font-mono flex items-center gap-1">
-                            <Building2 className="w-3 h-3" /> Select building to construct:
+                            <Building2 className="w-3 h-3" /> Available Buildings:
                           </p>
-                          {workerBuildableBuildings.map((building) => (
+                          {contextualBuildings.map((building) => (
                             <Button
                               key={building.buildingType}
                               size="sm"
                               variant="ghost"
-                              className={`w-full justify-between text-xs font-mono p-2 h-auto ${building.canAfford ? "hover:bg-amber-900/30" : "opacity-50 cursor-not-allowed"
+                              className={`w-full justify-between text-xs font-mono p-2 h-auto ${building.isRecommended
+                                ? "bg-amber-900/30 border border-amber-500/50 hover:bg-amber-800/40"
+                                : building.canAfford
+                                  ? "hover:bg-amber-900/30"
+                                  : "opacity-50 cursor-not-allowed"
                                 }`}
                               onClick={() => building.canAfford && handlePlaceBuilding(building.buildingType)}
-                              disabled={isLoading || !building.canAfford}
+                              disabled={isLoading || !building.canAfford || (selectedUnit.buildsLeft ?? 0) <= 0}
                             >
                               <div className="text-left">
-                                <span className={building.canAfford ? "text-white" : "text-slate-500"}>
+                                <span className={`flex items-center gap-1 ${building.canAfford ? "text-white" : "text-slate-500"}`}>
+                                  {building.isRecommended && <span className="text-amber-400 text-[10px]">★</span>}
                                   {building.buildingType.toUpperCase().replace("_", " ")}
                                 </span>
-                                <p className="text-[10px] text-slate-500 font-normal">
-                                  {BUILDING_INFO[building.buildingType]?.desc?.slice(0, 40)}...
+                                <p className="text-[10px] text-slate-500 font-normal break-words">
+                                  {BUILDING_INFO[building.buildingType]?.desc}
                                 </p>
                               </div>
                               <span className={`text-xs ${building.canAfford ? "text-emerald-400" : "text-red-400"}`}>
@@ -839,10 +1061,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                             </Button>
                           ))}
                         </div>
-                      )}
-
-                      {/* Worker Build Menu - Empty State */}
-                      {showBuildMenu && workerBuildableBuildings.length === 0 && (
+                      ) : (
                         <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700/50 text-center">
                           <p className="text-xs text-slate-400">No buildings available to construct.</p>
                           <p className="text-[10px] text-slate-500 mt-1">Research tech to unlock more options.</p>
@@ -922,70 +1141,78 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
           {/* Building Actions */}
           {selectedBuilding && isMyBuilding && isMyTurn && (
             <div className="space-y-3">
-              {/* Building Description */}
-              <p className="text-xs text-slate-400 italic bg-slate-800/30 p-2 rounded">
-                {BUILDING_INFO[selectedBuilding.type]?.desc || "A structure under your control."}
-                {BUILDING_INFO[selectedBuilding.type]?.income && (
-                  <span className="block mt-1 text-emerald-400 not-italic">
-                    <TrendingUp className="w-3 h-3 inline mr-1" />
-                    Income: {BUILDING_INFO[selectedBuilding.type]?.income}
-                  </span>
-                )}
-              </p>
+              {(() => {
+                const selectedBuildingHasActions =
+                  selectedBuilding.type === "city" ||
+                  selectedBuilding.type === "factory" ||
+                  selectedBuilding.type === "barracks" ||
+                  selectedBuilding.type === "skyport";
 
-              {/* Spawn Units Button */}
-              {(selectedBuilding.type === "city" || selectedBuilding.type === "factory" || selectedBuilding.type === "barracks" || selectedBuilding.type === "skyport") && (
-                <Button
-                  size="sm"
-                  className="w-full text-xs font-mono uppercase bg-blue-900/50 text-blue-200 hover:bg-blue-800 border border-blue-500/30"
-                  onClick={() => setShowSpawnMenu(!showSpawnMenu)}
-                >
-                  <Users className="w-4 h-4 mr-2" />
-                  {showSpawnMenu ? "Hide Units" : "Train Units"}
-                </Button>
-              )}
-
-              {/* Spawn Menu */}
-              {showSpawnMenu && spawnableUnits.length > 0 && (
-                <div className="bg-slate-800/80 rounded-lg p-3 space-y-2 border border-slate-700/50">
-                  <p className="text-xs text-slate-400 font-mono flex items-center gap-1">
-                    <Users className="w-3 h-3" /> Available Units:
-                  </p>
-                  {spawnableUnits.map((unit) => (
-                    <Button
-                      key={unit.unitType}
-                      size="sm"
-                      variant="ghost"
-                      className={`w-full justify-between text-xs font-mono p-2 h-auto ${unit.canAfford ? "hover:bg-blue-900/30" : "opacity-50 cursor-not-allowed"
-                        }`}
-                      onClick={() => unit.canAfford && handleSpawnUnit(unit.unitType)}
-                      disabled={isLoading || !unit.canAfford}
-                    >
-                      <div className="text-left">
-                        <span className={unit.canAfford ? "text-white" : "text-slate-500"}>
-                          {unit.unitType.toUpperCase()}
+                return (
+                  <>
+                    {/* Building Description */}
+                    <p className="text-xs text-slate-400 italic bg-slate-800/30 p-2 rounded">
+                      {BUILDING_INFO[selectedBuilding.type]?.desc || "A structure under your control."}
+                      {BUILDING_INFO[selectedBuilding.type]?.income && (
+                        <span className="block mt-1 text-emerald-400 not-italic">
+                          <TrendingUp className="w-3 h-3 inline mr-1" />
+                          Income: {BUILDING_INFO[selectedBuilding.type]?.income}
                         </span>
-                        <p className="text-[10px] text-slate-500 font-normal">
-                          {UNIT_INFO[unit.unitType]?.desc?.slice(0, 40)}...
-                        </p>
-                      </div>
-                      <span className={`text-xs ${unit.canAfford ? "text-emerald-400" : "text-red-400"}`}>
-                        {UNIT_INFO[unit.unitType]?.biomass && `${UNIT_INFO[unit.unitType].biomass}🌿 `}
-                        {UNIT_INFO[unit.unitType]?.ore && `${UNIT_INFO[unit.unitType].ore}⚙️ `}
-                        {UNIT_INFO[unit.unitType]?.flux && `${UNIT_INFO[unit.unitType].flux}⚡`}
-                      </span>
-                    </Button>
-                  ))}
-                </div>
-              )}
+                      )}
+                    </p>
 
-              {/* Spawn Menu - Empty State */}
-              {showSpawnMenu && spawnableUnits.length === 0 && (
-                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700/50 text-center">
-                  <p className="text-xs text-slate-400">No units available to train.</p>
-                  <p className="text-[10px] text-slate-500 mt-1">Research tech or check resources.</p>
-                </div>
-              )}
+                    {/* Spawn Units - Show directly */}
+                    {!selectedBuilding.isConstructing && selectedBuildingHasActions && (
+                      <>
+                        {spawnableUnits.length > 0 ? (
+                          <div className="bg-slate-800/80 rounded-lg p-3 space-y-2 border border-slate-700/50">
+                            <p className="text-xs text-slate-400 font-mono flex items-center gap-1">
+                              <Users className="w-3 h-3" /> Trainable Units:
+                            </p>
+                            {spawnableUnits.map((unit) => (
+                              <Button
+                                key={unit.unitType}
+                                size="sm"
+                                variant="ghost"
+                                className={`w-full justify-between text-xs font-mono p-2 h-auto ${!unit.techUnlocked
+                                  ? "opacity-40 grayscale cursor-not-allowed bg-slate-900/50"
+                                  : unit.canAfford
+                                    ? "hover:bg-blue-900/30"
+                                    : "opacity-50 cursor-not-allowed"
+                                  }`}
+                                onClick={() => unit.techUnlocked && unit.canAfford && handleSpawnUnit(unit.unitType)}
+                                disabled={isLoading || !unit.canAfford || !unit.techUnlocked}
+                              >
+                                <div className="text-left flex items-center gap-2">
+                                  {!unit.techUnlocked && <Lock className="w-3 h-3 text-slate-500" />}
+                                  <div>
+                                    <span className={unit.canAfford && unit.techUnlocked ? "text-white" : "text-slate-500"}>
+                                      {unit.unitType.toUpperCase()}
+                                    </span>
+                                    <p className="text-[10px] text-slate-500 font-normal break-words">
+                                      {!unit.techUnlocked ? "Tech Locked" : UNIT_INFO[unit.unitType]?.desc}
+                                    </p>
+                                  </div>
+                                </div>
+                                <span className={`text-xs ${unit.canAfford && unit.techUnlocked ? "text-emerald-400" : "text-red-400"}`}>
+                                  {UNIT_INFO[unit.unitType]?.biomass && `${UNIT_INFO[unit.unitType].biomass}🌿 `}
+                                  {UNIT_INFO[unit.unitType]?.ore && `${UNIT_INFO[unit.unitType].ore}⚙️ `}
+                                  {UNIT_INFO[unit.unitType]?.flux && `${UNIT_INFO[unit.unitType].flux}⚡`}
+                                </span>
+                              </Button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700/50 text-center">
+                            <p className="text-xs text-slate-400">No units available to train.</p>
+                            <p className="text-[10px] text-slate-500 mt-1">Research tech or check resources.</p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
 
 
 
@@ -1003,7 +1230,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                   </div>
                 )}
               </div>
-            </div>
+            </div >
           )}
 
           {/* Enemy Unit Info */}
@@ -1064,70 +1291,15 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         </div>
       )}
 
-      {/* Tech Tree Panel */}
+      {/* Tech Tree Modal - Visual Upgrade */}
       {showTechTree && (
-        <div className="fixed inset-y-0 right-0 w-[420px] bg-slate-900/98 backdrop-blur-xl border-l border-slate-700 z-50 overflow-y-auto animate-in slide-in-from-right">
-          <div className="p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold text-purple-400 font-mono flex items-center gap-2">
-                <FlaskConical className="w-5 h-5" />
-                Technology Tree
-              </h2>
-              <Button variant="ghost" size="sm" onClick={() => setShowTechTree(false)} title="Close (Esc)">
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-
-            <div className="bg-slate-800/50 rounded-lg p-3 mb-4 border border-slate-700/50">
-              <p className="text-xs text-slate-400">
-                Research technologies using <span className="text-purple-400 font-bold">Flux ⚡</span> to unlock new units, buildings, and abilities.
-              </p>
-              <p className="text-xs text-purple-400 mt-1">
-                Your Flux: <span className="font-bold">{player.resources.flux}</span>
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              {techTree.map((tech) => (
-                <div
-                  key={tech.techId}
-                  className={`p-3 rounded-lg border transition-all ${tech.alreadyResearched
-                    ? "bg-emerald-900/30 border-emerald-500/50"
-                    : tech.canResearch && !isLoading
-                      ? "bg-slate-800/50 border-purple-500/30 hover:border-purple-500 cursor-pointer hover:bg-purple-900/20"
-                      : "bg-slate-800/30 border-slate-700/50 opacity-60"
-                    }`}
-                  onClick={() => tech.canResearch && !tech.alreadyResearched && !isLoading && handleResearchTech(tech.techId)}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-sm font-bold">{tech.name}</span>
-                    {tech.alreadyResearched ? (
-                      <span className="text-xs text-emerald-400 flex items-center gap-1">✓ Researched</span>
-                    ) : (
-                      <span className={`text-xs flex items-center gap-1 ${tech.canResearch ? "text-purple-400" : "text-slate-500"
-                        }`}>
-                        <Zap className="w-3 h-3" />
-                        {tech.cost}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-400 mt-1">{tech.description}</p>
-                  {tech.unlocks.length > 0 && (
-                    <p className="text-xs text-blue-400 mt-1 flex items-center gap-1">
-                      <CircleDot className="w-3 h-3" />
-                      Unlocks: {tech.unlocks.join(", ")}
-                    </p>
-                  )}
-                  {tech.prerequisites.length > 0 && !tech.alreadyResearched && (
-                    <p className="text-xs text-amber-400/70 mt-1">
-                      Requires: {tech.prerequisites.join(", ")}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        <TechTreeModal
+          techTree={techTree}
+          playerResources={player.resources}
+          onClose={() => setShowTechTree(false)}
+          onResearch={(techId) => !isLoading && handleResearchTech(techId)}
+          isLoading={isLoading}
+        />
       )}
 
       {/* Help Panel - Centered Landscape */}

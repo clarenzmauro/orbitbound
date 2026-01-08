@@ -10,6 +10,7 @@ interface WorldStripProps {
   selectedTileId?: string | null;
   highlightedTiles?: Map<string, "move" | "attack" | "build">;
   currentPlayerId?: string;
+  tileSize?: number;
 }
 
 export function WorldStrip({
@@ -20,6 +21,7 @@ export function WorldStrip({
   selectedTileId,
   highlightedTiles,
   currentPlayerId,
+  tileSize = 64,
 }: WorldStripProps) {
   // Create a lookup map for units by coordinate
   const unitMap = useMemo(() => {
@@ -56,7 +58,7 @@ export function WorldStrip({
             const building = getBuildingAt(tile.x, tile.y);
             const highlightType = highlightedTiles?.get(`${tile.x}-${tile.y}`);
             const isOwned = (unit?.playerId === currentPlayerId) || (building?.playerId === currentPlayerId);
-            
+
             return (
               <TileComponent
                 key={tile.id}
@@ -67,6 +69,8 @@ export function WorldStrip({
                 onClick={() => onTileClick(tile)}
                 highlightType={highlightType}
                 isOwned={isOwned}
+                width={tileSize}
+                height={tileSize}
               />
             );
           })}
@@ -75,4 +79,3 @@ export function WorldStrip({
     </div>
   );
 }
-

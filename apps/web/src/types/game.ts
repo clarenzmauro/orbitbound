@@ -8,9 +8,13 @@ export type TileType =
   | "sky"
   | "cloud"
   | "surface"
+  | "grass"
+  | "sand"
   | "dirt"
   | "stone"
+  | "cavern"
   | "deepstone"
+  | "crystal"
   | "bedrock"
   | "water"
   | "magma"
@@ -116,6 +120,7 @@ export interface Unit {
   maxMoves: number;
   entrenched?: boolean; // Marine entrench ability
   buildsLeft?: number; // Worker building uses remaining
+  autoExplore?: boolean; // Rover auto-explore mode
 }
 
 export interface Building {

@@ -88,7 +88,7 @@ const buildMap = (width: number, height: number, rng: () => number) => {
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const type = resolveTileType(x, y, height);
+      const type = resolveTileType(x, y, height, rng);
       const resource = determineResource(type, rng);
       const tile: TileDoc = {
         type,
@@ -97,11 +97,22 @@ const buildMap = (width: number, height: number, rng: () => number) => {
       if (resource) {
         tile.resource = resource;
       }
+      // Add clouds in sky
       if (type === "sky" && rng() < 0.02) {
         tile.type = "cloud";
       }
-      if (type === "surface" && rng() < 0.05) {
+      // Add water bodies on surface-level tiles
+      if ((type === "surface" || type === "grass" || type === "sand") && rng() < 0.05) {
         tile.type = "water";
+        // Remove resource if water overrides it
+        tile.resource = undefined;
+      }
+      // Add ruins - rare, surface/underground only
+      if ((type === "surface" || type === "grass" || type === "sand" || type === "dirt" || type === "cavern") && tile.type !== "water" && rng() < 0.015) {
+        tile.type = "ruins";
+        // Ruins might override resource, or exist alongside?
+        // Let's say ruins override natural resources for simplicity
+        tile.resource = undefined;
       }
       map.push(tile);
     }
@@ -110,44 +121,138 @@ const buildMap = (width: number, height: number, rng: () => number) => {
   return map;
 };
 
-const resolveTileType = (x: number, y: number, height: number) => {
+const resolveTileType = (x: number, y: number, height: number, rng: () => number) => {
+  // Sky layer (top 8 rows)
   if (y < SKY_ROWS) {
     return "sky";
   }
+  
+  // Surface layer (1 row)
   if (y < SKY_ROWS + SURFACE_ROWS) {
-    return "surface";
+    // Mix of surface, grass, and occasional sand
+    const r = rng();
+    if (r < 0.5) return "grass";
+    if (r < 0.85) return "surface";
+    return "sand";
   }
+  
+  // Bedrock layer (bottom row)
   if (y >= height - BEDROCK_ROWS) {
     return "bedrock";
   }
-
+  
+  // Magma layer (just above bedrock for large worlds)
+  if (y >= height - BEDROCK_ROWS - 2 && height >= 24) {
+    if (rng() < 0.4) return "magma";
+    return "deepstone";
+  }
+  
   const depth = y - (SKY_ROWS + SURFACE_ROWS);
+  
+  // Shallow layer (rows 0-3): dirt with occasional sand
   if (depth < 4) {
+    if (rng() < 0.15) return "sand";
     return "dirt";
   }
-  if (depth < 10) {
+  
+  // Mid layer (rows 4-7): transition zone with caverns
+  if (depth < 8) {
+    const r = rng();
+    if (r < 0.15) return "cavern";
+    if (r < 0.3) return "dirt";
     return "stone";
   }
+  
+  // Deep layer (rows 8-12): stone with crystal veins
+  if (depth < 13) {
+    const r = rng();
+    if (r < 0.08) return "crystal";
+    if (r < 0.15) return "cavern";
+    return "stone";
+  }
+  
+  // Very deep layer: deepstone dominant with rare crystals
+  const r = rng();
+  if (r < 0.12) return "crystal";
+  if (r < 0.2) return "cavern";
   return "deepstone";
 };
 
 const determineResource = (type: string, rng: () => number) => {
-  if (type === "dirt") {
-    if (rng() < 0.1) {
+  // Grass tiles - good for biomass
+  if (type === "grass") {
+    if (rng() < 0.25) {
       return "biomass";
     }
-    if (rng() < 0.03) {
+  }
+  
+  // Surface tiles - occasional biomass
+  if (type === "surface") {
+    if (rng() < 0.15) {
+      return "biomass";
+    }
+    if (rng() < 0.05) {
       return "water";
     }
   }
-  if (type === "stone" || type === "deepstone") {
-    if (rng() < 0.12) {
+  
+  // Sand tiles - occasional ore deposits
+  if (type === "sand") {
+    if (rng() < 0.10) {
       return "ore";
     }
-    if (rng() < 0.04) {
+  }
+  
+  // Dirt tiles - good for biomass, some water
+  if (type === "dirt") {
+    if (rng() < 0.20) {
+      return "biomass";
+    }
+    if (rng() < 0.08) {
+      return "water";
+    }
+  }
+  
+  // Stone tiles - ore and rare flux
+  if (type === "stone") {
+    if (rng() < 0.25) {
+      return "ore";
+    }
+    if (rng() < 0.06) {
       return "flux";
     }
   }
+  
+  // Crystal tiles - high flux yield
+  if (type === "crystal") {
+    if (rng() < 0.60) {
+      return "flux";
+    }
+    if (rng() < 0.20) {
+      return "ore";
+    }
+  }
+  
+  // Cavern tiles - mixed resources
+  if (type === "cavern") {
+    if (rng() < 0.25) {
+      return "ore";
+    }
+    if (rng() < 0.15) {
+      return "flux";
+    }
+  }
+  
+  // Deep stone - rich ore and better flux
+  if (type === "deepstone") {
+    if (rng() < 0.30) {
+      return "ore";
+    }
+    if (rng() < 0.12) {
+      return "flux";
+    }
+  }
+  
   return undefined;
 };
 

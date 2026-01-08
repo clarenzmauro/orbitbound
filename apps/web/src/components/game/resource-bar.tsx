@@ -1,6 +1,6 @@
 import React from "react";
 import type { PlayerResources } from "@/types/game";
-import { Leaf, Hammer, Zap, FlaskConical, TrendingUp, HelpCircle } from "lucide-react";
+import { Leaf, Hammer, Zap, FlaskConical, TrendingUp, HelpCircle, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 
@@ -10,11 +10,12 @@ interface ResourceBarProps {
   isMyTurn?: boolean;
   onTechClick?: () => void;
   onHelpClick?: () => void;
+  onExitClick?: () => void;
   income?: { biomass: number; ore: number; flux: number };
   cameraPosition?: { x: number; width: number };
 }
 
-export function ResourceBar({ resources, turn, isMyTurn, onTechClick, onHelpClick, income, cameraPosition }: ResourceBarProps) {
+export function ResourceBar({ resources, turn, isMyTurn, onTechClick, onHelpClick, onExitClick, income, cameraPosition }: ResourceBarProps) {
   return (
     <div className="fixed top-0 left-0 right-0 z-50">
       {/* Main HUD Container */}
@@ -86,6 +87,16 @@ export function ResourceBar({ resources, turn, isMyTurn, onTechClick, onHelpClic
             >
               <HelpCircle className="h-4 w-4" />
               <span className="absolute -bottom-1 -right-1 text-[9px] bg-slate-700 text-slate-300 px-1 rounded font-mono">H</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="rounded-full border-red-700/50 bg-red-900/20 hover:bg-red-800/40 text-red-400 hover:text-red-300 relative"
+              onClick={onExitClick}
+              title="Exit to Menu (Esc)"
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="absolute -bottom-1 -right-1 text-[9px] bg-red-800 text-red-200 px-1 rounded font-mono">Esc</span>
             </Button>
           </div>
         </div>

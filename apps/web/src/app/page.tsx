@@ -1,12 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { useUser } from "@clerk/nextjs";
+import { useUser, UserButton, SignedIn, SignedOut, SignInButton } from "@clerk/nextjs";
+import { useQuery } from "convex/react";
+import { api } from "@orbitbound/backend/convex/_generated/api";
 import { GameView } from "@/components/game/game-view";
+import { CreateGameModal } from "@/components/game/create-game-modal";
 import { useGameState, useLobbyActions, useAIActions } from "@/lib/game-hooks";
 import { Button } from "@/components/ui/button";
 import type { Id } from "@orbitbound/backend/convex/_generated/dataModel";
-import { Loader2, Rocket, Users, Play, Plus, Bot, X, Cpu } from "lucide-react";
+import {
+  Loader2, Rocket, Users, Play, Plus, Bot, X, Cpu,
+  Clock, Map as MapIcon, LogOut, History
+} from "lucide-react";
 import { toast } from "sonner";
 import type { FactionId } from "@/types/game";
 
@@ -17,29 +23,51 @@ export default function Home() {
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const [selectedFaction, setSelectedFaction] = useState<FactionId>("united_terran");
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   const { createGame, joinGame, startGame, openGames } = useLobbyActions();
   const { addAIPlayer, removeAIPlayer } = useAIActions();
   const gameState = useGameState(gameId ?? undefined, playerId ?? undefined);
+  const userGames = useQuery(api.userGames.getUserGames);
   const [isAddingAI, setIsAddingAI] = useState(false);
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Handlers
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  const handleCreateGame = async () => {
+  const handleCreateGame = async (width: number, height: number, seed?: number, aiDifficulty?: "easy" | "medium" | "hard") => {
     setIsCreating(true);
+    setShowCreateModal(false);
     try {
-      const newGameId = await createGame(48, 24); // 48 wide, 24 tall
+      const newGameId = await createGame(width, height, seed);
       setGameId(newGameId);
       toast.success("World generated! Now joining...");
-      
-      // Auto-join the game
+
       const newPlayerId = await joinGame(newGameId, selectedFaction, user?.id);
       setPlayerId(newPlayerId);
       toast.success("Joined the game!");
+
+      if (aiDifficulty) {
+        await addAIPlayer(newGameId, aiDifficulty);
+        toast.success(`Added ${aiDifficulty} AI opponent!`);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to create game");
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const handleQuickPlay = async () => {
+    setIsCreating(true);
+    try {
+      const newGameId = await createGame(48, 24);
+      setGameId(newGameId);
+      const newPlayerId = await joinGame(newGameId, selectedFaction, user?.id);
+      setPlayerId(newPlayerId);
+
+      await addAIPlayer(newGameId, "medium");
+      await startGame(newGameId, newPlayerId);
+
+      toast.success("Quick game started!");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to start game");
     } finally {
       setIsCreating(false);
     }
@@ -69,6 +97,13 @@ export default function Home() {
     }
   };
 
+  const handleExitGame = async () => {
+    if (!confirm("Are you sure you want to leave this game? Your progress will be saved.")) return;
+    setGameId(null);
+    setPlayerId(null);
+    toast.success("Returned to lobby");
+  };
+
   const handleAddAI = async (difficulty: "easy" | "medium" | "hard") => {
     if (!gameId) return;
     setIsAddingAI(true);
@@ -92,11 +127,6 @@ export default function Home() {
     }
   };
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Render States
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  // Loading user
   if (!userLoaded) {
     return (
       <main className="min-h-screen bg-slate-950 flex items-center justify-center">
@@ -105,7 +135,6 @@ export default function Home() {
     );
   }
 
-  // Game is active - render game view
   if (gameState && gameState.game.status === "active") {
     const currentPlayer = gameState.players.find((p) => p._id === playerId);
     if (!currentPlayer) {
@@ -117,7 +146,7 @@ export default function Home() {
     }
 
     return (
-      <main className="min-h-screen bg-slate-950">
+      <main className="min-h-screen bg-slate-950 relative">
         <GameView
           game={gameState.game}
           player={currentPlayer}
@@ -129,11 +158,19 @@ export default function Home() {
     );
   }
 
-  // In lobby - show lobby UI
   if (gameState && gameState.game.status === "lobby") {
     return (
       <main className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-700 p-8 rounded-2xl shadow-2xl max-w-lg w-full mx-4">
+        <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-700 p-8 rounded-2xl shadow-2xl max-w-lg w-full mx-4 relative">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleExitGame}
+            className="absolute top-4 right-4 h-8 w-8 p-0 text-slate-400 hover:text-red-400 hover:bg-red-900/30"
+          >
+            <X className="w-4 h-4" />
+          </Button>
+
           <div className="text-center mb-8">
             <Rocket className="w-16 h-16 text-emerald-500 mx-auto mb-4" />
             <h1 className="text-3xl font-bold text-white font-mono">ORBITBOUND</h1>
@@ -141,7 +178,6 @@ export default function Home() {
           </div>
 
           <div className="space-y-4 mb-6">
-            {/* Players List */}
             <div className="bg-slate-800/50 rounded-lg p-4">
               <h3 className="text-sm font-mono text-slate-400 uppercase mb-2">Players ({gameState.players.length}/8)</h3>
               {gameState.players.map((p) => (
@@ -156,11 +192,10 @@ export default function Home() {
                       {p.isAI ? p.aiName : p.faction.replace("_", " ")}
                     </span>
                     {p.isAI && (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono uppercase ${
-                        p.aiDifficulty === "easy" ? "bg-green-900/50 text-green-400" :
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono uppercase ${p.aiDifficulty === "easy" ? "bg-green-900/50 text-green-400" :
                         p.aiDifficulty === "medium" ? "bg-amber-900/50 text-amber-400" :
-                        "bg-red-900/50 text-red-400"
-                      }`}>
+                          "bg-red-900/50 text-red-400"
+                        }`}>
                         {p.aiDifficulty}
                       </span>
                     )}
@@ -184,7 +219,6 @@ export default function Home() {
               ))}
             </div>
 
-            {/* Add AI Players */}
             {gameState.players.length < 8 && (
               <div className="bg-slate-800/50 rounded-lg p-4">
                 <h3 className="text-sm font-mono text-slate-400 uppercase mb-3 flex items-center gap-2">
@@ -223,10 +257,10 @@ export default function Home() {
               </div>
             )}
 
-            {/* World Info */}
             <div className="bg-slate-800/50 rounded-lg p-4">
               <h3 className="text-sm font-mono text-slate-400 uppercase mb-2">World</h3>
-              <div className="text-white font-mono text-sm">
+              <div className="text-white font-mono text-sm flex items-center gap-2">
+                <MapIcon className="w-3 h-3" />
                 {gameState.game.width} × {gameState.game.height} tiles
               </div>
             </div>
@@ -240,7 +274,7 @@ export default function Home() {
             <Play className="w-4 h-4 mr-2" />
             Start Game ({gameState.players.length} players)
           </Button>
-          
+
           {gameState.players.length < 2 && (
             <p className="text-center text-amber-400/70 text-xs mt-2 font-mono">
               Add at least one AI opponent to start
@@ -251,90 +285,170 @@ export default function Home() {
     );
   }
 
-  // No game - show main menu
   return (
-    <main className="min-h-screen bg-slate-950 flex items-center justify-center">
-      <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-700 p-8 rounded-2xl shadow-2xl max-w-md w-full mx-4">
-        <div className="text-center mb-8">
-          <Rocket className="w-16 h-16 text-emerald-500 mx-auto mb-4 animate-bounce" />
-          <h1 className="text-4xl font-bold text-white font-mono tracking-tight">ORBITBOUND</h1>
-          <p className="text-slate-400 text-sm mt-2">Turn-Based 4X Strategy on a Cylinder World</p>
-        </div>
+    <main className="min-h-screen bg-slate-950 pt-8">
+      {/* Floating Auth Element */}
+      <div className="fixed top-6 right-6 z-50">
+        <SignedOut>
+          <SignInButton mode="modal">
+            <button className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-800/60 backdrop-blur-md border border-slate-700/50 text-slate-300 hover:text-white hover:bg-slate-700/60 hover:border-slate-600/50 transition-all text-sm font-medium shadow-lg">
+              Sign In
+            </button>
+          </SignInButton>
+        </SignedOut>
+        <SignedIn>
+          <UserButton afterSignOutUrl="/" />
+        </SignedIn>
+      </div>
 
-        {/* Faction Selection */}
-        <div className="mb-6">
-          <label className="block text-sm font-mono text-slate-400 uppercase mb-2">Select Faction</label>
-          <div className="grid grid-cols-3 gap-2">
-            {(["united_terran", "xeno_hive", "cyber_synapse"] as FactionId[]).map((faction) => (
-              <Button
-                key={faction}
-                variant={selectedFaction === faction ? "default" : "outline"}
-                className={`text-xs font-mono ${
-                  selectedFaction === faction 
-                    ? "bg-emerald-600 hover:bg-emerald-500" 
-                    : "border-slate-700 hover:bg-slate-800"
-                }`}
-                onClick={() => setSelectedFaction(faction)}
-              >
-                {faction.replace("_", " ").toUpperCase().slice(0, 8)}
-              </Button>
-            ))}
+      <CreateGameModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onCreate={handleCreateGame}
+        isCreating={isCreating}
+        selectedFaction={selectedFaction}
+        onFactionChange={setSelectedFaction}
+      />
+
+      <div className="container mx-auto px-4">
+
+        <section className="max-w-2xl mx-auto mb-12">
+          <div className="text-center mb-8">
+            <Rocket className="w-20 h-20 text-emerald-500 mx-auto mb-6 animate-bounce" />
+            <h1 className="text-5xl font-bold text-white font-mono tracking-tight mb-2">ORBITBOUND</h1>
+            <p className="text-slate-400 text-lg">Turn-Based 4X Strategy on a Cylinder World</p>
           </div>
-        </div>
 
-        {/* Actions */}
-        <div className="space-y-3">
-          <Button
-            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-mono uppercase tracking-wide"
-            onClick={handleCreateGame}
-            disabled={isCreating}
-          >
-            {isCreating ? (
-              <Loader2 className="w-4 h-4 animate-spin mr-2" />
-            ) : (
+          <div className="space-y-3">
+            <Button
+              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-mono uppercase"
+              onClick={handleQuickPlay}
+              disabled={isCreating}
+            >
+              {isCreating ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : (
+                <Play className="w-4 h-4 mr-2" />
+              )}
+              Quick Play (vs AI)
+            </Button>
+            <Button
+              className="w-full border-emerald-500/30 text-emerald-400 hover:bg-emerald-900/30 font-mono uppercase"
+              onClick={() => setShowCreateModal(true)}
+            >
               <Plus className="w-4 h-4 mr-2" />
-            )}
-            Create New Game
-          </Button>
+              Custom Game
+            </Button>
+          </div>
+        </section>
 
-          {openGames.length > 0 && (
-            <div className="mt-6">
-              <h3 className="text-sm font-mono text-slate-400 uppercase mb-3">Open Games</h3>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {openGames.map((game) => (
-                  <div
-                    key={game.gameId}
-                    className="flex items-center justify-between bg-slate-800/50 rounded-lg p-3"
-                  >
-                    <div>
-                      <div className="text-white font-mono text-sm">
-                        {game.width}×{game.height}
-                      </div>
-                      <div className="text-slate-400 text-xs">
-                        {game.playerCount}/{game.maxPlayers} players
-                      </div>
+        {openGames.length > 0 && (
+          <section className="max-w-2xl mx-auto mb-12">
+            <h3 className="text-xl font-mono text-white font-bold mb-4 flex items-center gap-2">
+              <Users className="w-5 h-5 text-blue-400" />
+              Open Games
+            </h3>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {openGames.map((game) => (
+                <Button
+                  key={game.gameId}
+                  variant="outline"
+                  onClick={() => handleJoinGame(game.gameId as Id<"games">)}
+                  disabled={isJoining}
+                  className="flex items-center justify-between w-full bg-slate-900/50 border border-slate-700 rounded-lg p-4 hover:border-emerald-500/50 hover:bg-slate-800/50 transition-all h-auto py-4"
+                >
+                  <div className="text-left">
+                    <div className="text-white font-mono text-sm">
+                      {game.width}×{game.height}
                     </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-emerald-500/30 text-emerald-400 hover:bg-emerald-900/30"
-                      onClick={() => handleJoinGame(game.gameId as Id<"games">)}
-                      disabled={isJoining}
-                    >
-                      <Users className="w-3 h-3 mr-1" />
-                      Join
-                    </Button>
+                    <div className="text-slate-400 text-xs">
+                      {game.playerCount}/{game.maxPlayers} players
+                    </div>
                   </div>
-                ))}
-              </div>
+                  {isJoining ? <Loader2 className="w-3 h-3 animate-spin" /> : <Users className="w-3 h-3 ml-2" />}
+                </Button>
+              ))}
             </div>
-          )}
-        </div>
+          </section>
+        )}
 
-        {/* Footer */}
-        <p className="text-center text-slate-500 text-xs mt-8 font-mono">
-          {user ? `Logged in as ${user.firstName}` : "Playing as Guest"}
-        </p>
+        {userGames?.activeGames && userGames.activeGames.length > 0 && (
+          <section className="max-w-2xl mx-auto mb-12">
+            <h3 className="text-xl font-mono text-white font-bold mb-4 flex items-center gap-2">
+              <Play className="w-5 h-5 text-emerald-500" />
+              Continue Playing
+            </h3>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {userGames.activeGames.map((game) => (
+                <Button
+                  key={game.gameId}
+                  variant="outline"
+                  onClick={() => {
+                    if (game.status === "lobby") {
+                      handleJoinGame(game.gameId as Id<"games">);
+                    } else {
+                      setGameId(game.gameId as Id<"games">);
+                      setPlayerId(game.playerId as Id<"players">);
+                    }
+                  }}
+                  disabled={isJoining}
+                  className="flex items-center justify-between w-full bg-slate-900/50 border border-slate-700 rounded-lg p-4 hover:border-emerald-500/50 hover:bg-slate-800/50 transition-all h-auto py-4"
+                >
+                  <div className="text-left">
+                    <div className="text-white font-mono text-sm">
+                      {game.width}×{game.height}
+                    </div>
+                    <div className="text-slate-400 text-xs">
+                      Turn {game.turn}
+                    </div>
+                  </div>
+                  {isJoining ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3 ml-2" />}
+                </Button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {userGames?.completedGames && userGames.completedGames.length > 0 && (
+          <section className="max-w-2xl mx-auto mb-12">
+            <h2 className="text-xl font-mono text-white font-bold mb-4 flex items-center gap-2">
+              <History className="w-5 h-5 text-amber-400" />
+              Recent Games
+            </h2>
+            <div className="space-y-2">
+              {userGames.completedGames.slice(0, 5).map((game) => (
+                <div
+                  key={game.gameId}
+                  className="bg-slate-900/30 border border-slate-800 rounded-lg p-4"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="text-white font-mono text-sm">
+                      {game.width}×{game.height}
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded font-mono uppercase bg-slate-700 text-slate-300">
+                      {game.status}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-400 mt-2 flex items-center gap-4">
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      Turn {game.turn}
+                    </span>
+                    <span className="font-mono text-emerald-400">
+                      {game.faction?.replace("_", " ").toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <footer className="text-center py-8">
+          <p className="text-slate-500 text-xs font-mono">
+            {user ? `Logged in as ${user.firstName || user.username || user.emailAddresses[0]?.emailAddress}` : "Sign in to save your games"}
+          </p>
+        </footer>
       </div>
     </main>
   );

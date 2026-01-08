@@ -107,6 +107,7 @@ export interface UnitDef {
   canFly?: boolean;
   abilities?: string[];
   requiredTech?: string;
+  buildsLeft?: number; // For Workers: number of buildings they can construct
 }
 
 export const UNIT_DEFS: Record<string, UnitDef> = {
@@ -149,6 +150,7 @@ export const UNIT_DEFS: Record<string, UnitDef> = {
     vision: 2,
     cost: { biomass: 5 },
     abilities: ["build"],
+    buildsLeft: 3, // Can build 3 buildings before being consumed
   },
   // Marine - basic infantry
   marine: {
@@ -223,6 +225,7 @@ export interface BuildingDef {
   requiredTech?: string;
   defenseBonus?: number;
   requiresResource?: string; // e.g., Mine requires "ore" resource on tile
+  turnsToComplete?: number; // Turns needed to build (0 for instant)
 }
 
 export const BUILDING_DEFS: Record<string, BuildingDef> = {
@@ -230,10 +233,11 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     name: "City",
     hp: 20,
     income: { biomass: 2, ore: 2 },
-    cost: {}, // Founded by Lander
+    cost: {}, // Founded by Lander (instant)
     providesVision: 3,
     canSpawnUnits: true,
     spawnableUnits: ["worker", "marine", "rover"],
+    turnsToComplete: 0, // Instant
   },
   barracks: {
     name: "Barracks",
@@ -243,6 +247,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     canSpawnUnits: true,
     spawnableUnits: ["marine"],
     requiredTech: "militarization",
+    turnsToComplete: 1, // 1 turn
   },
   farm: {
     name: "Farm",
@@ -250,6 +255,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     income: { biomass: 2 },
     cost: { ore: 10 },
     terrainRequired: ["surface", "dirt"],
+    turnsToComplete: 1, // 1 turn
   },
   mine: {
     name: "Mine",
@@ -258,6 +264,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     cost: { biomass: 10 },
     terrainRequired: ["dirt", "stone", "deepstone"],
     requiresResource: "ore", // Mine must be on ore deposit
+    turnsToComplete: 2, // 2 turns (underground work)
   },
   solar_array: {
     name: "Solar Array",
@@ -265,6 +272,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     income: { flux: 1 },
     cost: { ore: 15 },
     terrainRequired: ["surface"],
+    turnsToComplete: 2, // 2 turns (solar installation)
   },
   bunker: {
     name: "Bunker",
@@ -272,6 +280,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     income: {},
     cost: { ore: 20 },
     defenseBonus: 5,
+    turnsToComplete: 3, // 3 turns (heavy fortification)
   },
   factory: {
     name: "Factory",
@@ -281,6 +290,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     canSpawnUnits: true,
     spawnableUnits: ["tank", "arty"],
     requiredTech: "ballistics",
+    turnsToComplete: 3, // 3 turns (complex machinery)
   },
   skyport: {
     name: "Skyport",
@@ -290,6 +300,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     canSpawnUnits: true,
     spawnableUnits: ["gunship"],
     requiredTech: "flight",
+    turnsToComplete: 4, // 4 turns (aerospace construction)
   },
   silo: {
     name: "Silo",
@@ -298,6 +309,7 @@ export const BUILDING_DEFS: Record<string, BuildingDef> = {
     cost: { ore: 100, flux: 50 },
     terrainRequired: ["surface"],
     requiredTech: "orbital_mechanics",
+    turnsToComplete: 5, // 5 turns (end-game structure)
   },
 };
 
@@ -350,6 +362,14 @@ export const TECH_DEFS: Record<string, TechDef> = {
     prerequisites: ["logistics"],
     unlocks: [],
     description: "Can mine Bedrock for Rare Earths.",
+  },
+  heat_shield: {
+    name: "Heat Shield",
+    tier: 2,
+    cost: 50,
+    prerequisites: ["deep_core"],
+    unlocks: [],
+    description: "Allows units to cross Magma tiles safely.",
   },
   ballistics: {
     name: "Ballistics",

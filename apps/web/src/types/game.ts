@@ -24,7 +24,8 @@ export type TileType =
   | "factory"
   | "skyport"
   | "silo"
-  | "barracks";
+  | "barracks"
+  | "construction";
 
 // Resource types matching backend RESOURCE_KEYS
 export type ResourceType = "biomass" | "ore" | "flux";
@@ -114,6 +115,7 @@ export interface Unit {
   movesLeft: number;
   maxMoves: number;
   entrenched?: boolean; // Marine entrench ability
+  buildsLeft?: number; // Worker building uses remaining
 }
 
 export interface Building {
@@ -124,6 +126,10 @@ export interface Building {
   x: number;
   y: number;
   hp: number;
+  isConstructing?: boolean; // True if building is under construction
+  buildProgress?: number; // Current construction progress
+  turnsToComplete?: number; // Total turns needed
+  workerId?: string; // Worker currently building this
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

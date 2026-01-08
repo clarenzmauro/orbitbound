@@ -6,13 +6,13 @@ import { WorldStrip } from "./world-strip";
 import { ResourceBar } from "./resource-bar";
 import { GameNotifications, useGameNotifications } from "./game-notifications";
 import { Button } from "@/components/ui/button";
-import { 
+import {
   ChevronLeft, ChevronRight, Crosshair, Home, ArrowRight, Loader2,
   Swords, Shield, Factory, Wheat, Pickaxe, Sun, Rocket, X, Zap,
   FlaskConical, Users, Building2, Target, Info, Keyboard, TrendingUp,
-  Heart, Move, Eye, CircleDot, HelpCircle, Bot
+  Heart, Move, Eye, CircleDot, HelpCircle, Bot, Hammer
 } from "lucide-react";
-import { useGameActions, useTechTree, useSpawnableUnits, useBuildableBuildings } from "@/lib/game-hooks";
+import { useGameActions, useTechTree, useSpawnableUnits, useBuildableBuildings, useWorkerBuildableBuildings } from "@/lib/game-hooks";
 import type { Id } from "@orbitbound/backend/convex/_generated/dataModel";
 
 interface GameViewProps {
@@ -36,6 +36,17 @@ const UNIT_INFO: Record<string, { desc: string; biomass?: number; ore?: number; 
   gunship: { desc: "Air unit. Ignores terrain costs.", ore: 40, flux: 20 },
 };
 
+// Unit combat stats matching plan.md specifications
+const UNIT_STATS: Record<string, { atk: number; def: number; range: number; vision: number }> = {
+  settler: { atk: 0, def: 0, range: 1, vision: 3 },
+  worker: { atk: 0, def: 0, range: 1, vision: 2 },
+  marine: { atk: 5, def: 3, range: 1, vision: 2 },
+  rover: { atk: 2, def: 1, range: 1, vision: 4 },
+  tank: { atk: 8, def: 6, range: 1, vision: 2 },
+  arty: { atk: 12, def: 1, range: 4, vision: 3 },
+  gunship: { atk: 10, def: 2, range: 1, vision: 4 },
+};
+
 const BUILDING_INFO: Record<string, { desc: string; income?: string; biomass?: number; ore?: number; flux?: number }> = {
   city: { desc: "Your headquarters. Spawns units and builds structures.", income: "+2 Biomass, +2 Ore" },
   farm: { desc: "Agricultural production on surface/dirt.", income: "+2 Biomass", ore: 10 },
@@ -53,7 +64,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
   const [selectedTileId, setSelectedTileId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [hasInitializedCamera, setHasInitializedCamera] = useState(false);
-  
+
   // UI State
   const [showTechTree, setShowTechTree] = useState(false);
   const [showSpawnMenu, setShowSpawnMenu] = useState(false);
@@ -99,6 +110,11 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
     isMyBuilding && selectedBuilding?.type === "city" ? selectedBuilding._id as Id<"buildings"> : undefined
   );
 
+  // Get buildable buildings for Workers (no city needed)
+  const workerBuildableBuildings = useWorkerBuildableBuildings(
+    player._id as Id<"players">
+  );
+
   // Check if it's the current player's turn
   const isMyTurn = useMemo(() => {
     const activePlayerId = game.playerOrder[game.activePlayerIndex];
@@ -112,14 +128,14 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
   const playerIncome = useMemo(() => {
     const playerBuildings = buildings.filter(b => b.playerId === player._id);
     let biomass = 0, ore = 0, flux = 0;
-    
+
     for (const b of playerBuildings) {
       if (b.type === "city") { biomass += 2; ore += 2; }
       if (b.type === "farm") { biomass += 2; }
       if (b.type === "mine") { ore += 2; }
       if (b.type === "solar_array") { flux += 1; }
     }
-    
+
     return { biomass, ore, flux };
   }, [buildings, player._id]);
 
@@ -135,13 +151,13 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
   // Get valid movement tiles for selected unit
   const validMoveTiles = useMemo(() => {
     if (!selectedUnit || !isMyUnit || !isMyTurn || selectedUnit.movesLeft <= 0) return new Set<string>();
-    
+
     const tiles = new Set<string>();
     const directions = [
       { dx: -1, dy: 0 }, { dx: 1, dy: 0 },
       { dx: 0, dy: -1 }, { dx: 0, dy: 1 }
     ];
-    
+
     for (const { dx, dy } of directions) {
       const nx = (selectedUnit.x + dx + game.width) % game.width;
       const ny = Math.max(0, Math.min(game.height - 1, selectedUnit.y + dy));
@@ -150,78 +166,78 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         tiles.add(`${nx}-${ny}`);
       }
     }
-    
+
     return tiles;
   }, [selectedUnit, isMyUnit, isMyTurn, game.width, game.height, getTile]);
 
   // Get valid attack tiles
   const validAttackTiles = useMemo(() => {
     if (!selectedUnit || !isMyUnit || !isMyTurn || !attackMode) return new Set<string>();
-    
+
     const tiles = new Set<string>();
     const range = selectedUnit.type === "arty" ? 4 : 1;
-    
+
     for (let dx = -range; dx <= range; dx++) {
       for (let dy = -range; dy <= range; dy++) {
         if (dx === 0 && dy === 0) continue;
         if (Math.abs(dx) + Math.abs(dy) > range) continue;
-        
+
         const nx = (selectedUnit.x + dx + game.width) % game.width;
         const ny = Math.max(0, Math.min(game.height - 1, selectedUnit.y + dy));
         const tile = getTile(nx, ny);
-        
+
         if (tile) {
           // Check for enemy units or buildings
           const enemyUnit = units.find(u => u.x === nx && u.y === ny && u.playerId !== player._id);
           const enemyBuilding = buildings.find(b => b.x === nx && b.y === ny && b.playerId !== player._id);
-          
+
           if (enemyUnit || enemyBuilding) {
             tiles.add(`${nx}-${ny}`);
           }
         }
       }
     }
-    
+
     return tiles;
   }, [selectedUnit, isMyUnit, isMyTurn, attackMode, game.width, game.height, getTile, units, buildings, player._id]);
 
   // Get valid build tiles (adjacent to ANY of player's buildings)
   const validBuildTiles = useMemo(() => {
     if (!buildingPlacementMode) return new Set<string>();
-    
+
     const tiles = new Set<string>();
     const directions = [
       { dx: -1, dy: 0 }, { dx: 1, dy: 0 },
       { dx: 0, dy: -1 }, { dx: 0, dy: 1 }
     ];
-    
+
     // Get all player's buildings
     const myBuildings = buildings.filter(b => b.playerId === player._id);
-    
+
     // Check tiles adjacent to each of player's buildings
     for (const building of myBuildings) {
       for (const { dx, dy } of directions) {
         const nx = (building.x + dx + game.width) % game.width;
         const ny = Math.max(0, Math.min(game.height - 1, building.y + dy));
         const tile = getTile(nx, ny);
-        
-        if (tile && !tile.unitId && !tile.buildingId && 
-            tile.type !== "bedrock" && tile.type !== "water" && tile.type !== "fog") {
+
+        if (tile && !tile.unitId && !tile.buildingId &&
+          tile.type !== "bedrock" && tile.type !== "water" && tile.type !== "fog") {
           tiles.add(`${nx}-${ny}`);
         }
       }
     }
-    
+
     return tiles;
   }, [buildingPlacementMode, buildings, player._id, game.width, game.height, getTile]);
 
   // Center camera on player's first unit when game loads
   useEffect(() => {
     if (hasInitializedCamera) return;
-    
+
     const playerUnit = units.find((u) => u.playerId === player._id);
     const playerBuilding = buildings.find((b) => b.playerId === player._id);
-    
+
     const target = playerUnit || playerBuilding;
     if (target) {
       const centerOffset = Math.floor(VIEWPORT_WIDTH / 2);
@@ -271,7 +287,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
     const handleKeyDown = (e: KeyboardEvent) => {
       // Check if unit can be controlled with WASD
       const canControlUnit = selectedUnit && isMyUnit && isMyTurn && selectedUnit.movesLeft > 0 && !isLoading;
-      
+
       // Unit movement with WASD when unit selected (takes priority over camera)
       if (canControlUnit) {
         if (e.key === "w" || e.key === "W") { handleMoveUnit("U"); return; }
@@ -279,7 +295,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         if (e.key === "s" || e.key === "S") { handleMoveUnit("D"); return; }
         if (e.key === "d" || e.key === "D") { handleMoveUnit("R"); return; }
       }
-      
+
       // Camera movement (Arrow keys always work, A/D only when no unit selected)
       if (e.key === "ArrowLeft") moveCamera("left");
       if (e.key === "ArrowRight") moveCamera("right");
@@ -287,7 +303,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         if (e.key === "a" || e.key === "A") moveCamera("left");
         if (e.key === "d" || e.key === "D") moveCamera("right");
       }
-      
+
       // Cancel actions
       if (e.key === "Escape") {
         setSelectedTileId(null);
@@ -298,18 +314,26 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         setShowBuildMenu(false);
         setShowHelp(false);
       }
-      
+
       // Quick actions
       if (e.key === "t" || e.key === "T") setShowTechTree(prev => !prev);
       if (e.key === "?" || e.key === "h") setShowHelp(prev => !prev);
       if (e.key === "e" || e.key === "E") {
         if (isMyTurn && !isLoading) handleEndTurn();
       }
+      // Center camera on selected unit/building
+      if (e.key === "c" || e.key === "C") {
+        const target = selectedUnit || (selectedBuilding && isMyBuilding ? selectedBuilding : null);
+        if (target) {
+          const centerOffset = Math.floor(VIEWPORT_WIDTH / 2);
+          setCameraX((target.x - centerOffset + game.width) % game.width);
+        }
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [moveCamera, selectedUnit, isMyUnit, isMyTurn, isLoading]);
+  }, [moveCamera, selectedUnit, isMyUnit, isMyTurn, isLoading, selectedBuilding, isMyBuilding, game.width]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Game Actions
@@ -317,7 +341,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
   const handleMoveUnit = async (direction: Direction) => {
     if (!selectedUnit || !isMyTurn || !isMyUnit) return;
-    
+
     setIsLoading(true);
     try {
       await actions.moveUnit(
@@ -335,7 +359,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
   const handleFoundCity = async () => {
     if (!selectedUnit || selectedUnit.type !== "settler" || !isMyTurn || !isMyUnit) return;
-    
+
     setIsLoading(true);
     try {
       await actions.foundCity(
@@ -353,7 +377,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
   const handleEndTurn = async () => {
     if (!isMyTurn) return;
-    
+
     setIsLoading(true);
     try {
       await actions.endTurn(
@@ -370,7 +394,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
   const handleSpawnUnit = async (unitType: string) => {
     if (!selectedBuilding || !isMyTurn || !isMyBuilding) return;
-    
+
     setIsLoading(true);
     try {
       await actions.spawnUnit(
@@ -387,20 +411,20 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
     }
   };
 
-  const handlePlaceBuilding = async (tile: Tile) => {
-    if (!buildingPlacementMode || !selectedBuilding || !isMyTurn) return;
-    
+  const handlePlaceBuilding = async (buildingType: string) => {
+    if (!selectedUnit || selectedUnit.type !== "worker" || !isMyTurn || !isMyUnit) return;
+
     setIsLoading(true);
     try {
       await actions.placeBuilding(
         player._id as Id<"players">,
-        selectedBuilding._id as Id<"buildings">,
-        buildingPlacementMode,
-        tile.x,
-        tile.y
+        selectedUnit._id as Id<"units">,
+        buildingType,
+        selectedUnit.x,
+        selectedUnit.y
       );
-      notify.building("Construction Complete", `${buildingPlacementMode.replace("_", " ")} is operational`);
-      setBuildingPlacementMode(null);
+      notify.building("Construction Started", `Building ${buildingType.replace("_", " ")} — Worker will continue next turn`);
+      setShowBuildMenu(false);
     } catch (error) {
       notify.error("Build Failed", error instanceof Error ? error.message : "Cannot build here");
     } finally {
@@ -408,9 +432,72 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
     }
   };
 
+  const handleContinueBuilding = async () => {
+    if (!selectedUnit || selectedUnit.type !== "worker" || !isMyTurn || !isMyUnit) return;
+
+    setIsLoading(true);
+    try {
+      const result = await actions.continueBuilding(
+        player._id as Id<"players">,
+        selectedUnit._id as Id<"units">
+      );
+      if (result.complete) {
+        notify.building("Construction Complete", "Building is now operational!");
+      } else {
+        notify.info("Building Progress", `Progress: ${result.progress}/${result.total} turns`);
+      }
+    } catch (error) {
+      notify.error("Continue Failed", error instanceof Error ? error.message : "Cannot continue building");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCollectResource = async () => {
+    if (!selectedUnit || !selectedTile?.resource || !isMyTurn || !isMyUnit) return;
+
+    setIsLoading(true);
+    try {
+      await actions.collectResource(
+        player._id as Id<"players">,
+        selectedTile.x,
+        selectedTile.y
+      );
+      const resourceName = selectedTile.resource.charAt(0).toUpperCase() + selectedTile.resource.slice(1);
+      notify.success("Resource Collected", `+2 ${resourceName} harvested!`);
+    } catch (error) {
+      notify.error("Harvest Failed", error instanceof Error ? error.message : "Cannot collect resource");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleEntrench = async () => {
+    if (!selectedUnit || selectedUnit.type !== "marine" || !isMyTurn || !isMyUnit) return;
+
+    setIsLoading(true);
+    try {
+      const newState = !selectedUnit.entrenched;
+      await actions.toggleEntrench(
+        selectedUnit._id as Id<"units">,
+        player._id as Id<"players">,
+        newState
+      );
+      if (newState) {
+        notify.unit("Entrenched!", "Marine gains +2 DEF until moved");
+      } else {
+        notify.unit("Entrenchment Broken", "Marine is ready to move");
+      }
+    } catch (error) {
+      notify.error("Entrench Failed", error instanceof Error ? error.message : "Cannot change entrench state");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleAttack = async (tile: Tile) => {
     if (!selectedUnit || !attackMode || !isMyTurn || !isMyUnit) return;
-    
+
     setIsLoading(true);
     try {
       await actions.attack(
@@ -452,16 +539,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
       }
       return;
     }
-    
-    if (buildingPlacementMode) {
-      if (validBuildTiles.has(`${tile.x}-${tile.y}`)) {
-        handlePlaceBuilding(tile);
-      } else {
-        notify.error("Invalid Location", "Must be adjacent to your buildings");
-      }
-      return;
-    }
-    
+
     setSelectedTileId(tile.id);
     setShowSpawnMenu(false);
     setShowBuildMenu(false);
@@ -470,7 +548,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
   // Calculate highlighted tiles for WorldStrip
   const highlightedTiles = useMemo(() => {
     const highlights = new Map<string, "move" | "attack" | "build">();
-    
+
     if (attackMode) {
       validAttackTiles.forEach(id => highlights.set(id, "attack"));
     } else if (buildingPlacementMode) {
@@ -478,7 +556,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
     } else if (selectedUnit && isMyUnit && isMyTurn) {
       validMoveTiles.forEach(id => highlights.set(id, "move"));
     }
-    
+
     return highlights;
   }, [attackMode, buildingPlacementMode, validAttackTiles, validBuildTiles, validMoveTiles, selectedUnit, isMyUnit, isMyTurn]);
 
@@ -488,30 +566,30 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
   return (
     <div className="min-h-screen bg-slate-950 text-white overflow-hidden relative selection:bg-emerald-500/30">
-      
+
       {/* Game Notifications */}
       <GameNotifications notifications={notifications} onDismiss={dismissNotification} />
-      
+
       {/* Background Atmosphere & Parallax */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-black" />
-        
-        <div 
-          className="absolute inset-0 opacity-40 transition-transform duration-500 ease-out will-change-transform" 
-          style={{ 
-            backgroundImage: 'radial-gradient(white 1.5px, transparent 1.5px)', 
+
+        <div
+          className="absolute inset-0 opacity-40 transition-transform duration-500 ease-out will-change-transform"
+          style={{
+            backgroundImage: 'radial-gradient(white 1.5px, transparent 1.5px)',
             backgroundSize: '100px 100px',
-            transform: `translateX(-${cameraX * 2}px)` 
+            transform: `translateX(-${cameraX * 2}px)`
           }}
         />
-        
-        <div 
-          className="absolute inset-0 opacity-30 transition-transform duration-500 ease-out will-change-transform" 
-          style={{ 
-            backgroundImage: 'radial-gradient(white 1px, transparent 1px)', 
+
+        <div
+          className="absolute inset-0 opacity-30 transition-transform duration-500 ease-out will-change-transform"
+          style={{
+            backgroundImage: 'radial-gradient(white 1px, transparent 1px)',
             backgroundSize: '50px 50px',
             backgroundPosition: '25px 25px',
-            transform: `translateX(-${cameraX * 5}px)` 
+            transform: `translateX(-${cameraX * 5}px)`
           }}
         />
 
@@ -520,19 +598,20 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
       </div>
 
       {/* HUD */}
-      <ResourceBar 
-        resources={player.resources} 
-        turn={game.turn} 
+      <ResourceBar
+        resources={player.resources}
+        turn={game.turn}
         isMyTurn={isMyTurn}
         onTechClick={() => setShowTechTree(true)}
+        onHelpClick={() => setShowHelp(true)}
         income={playerIncome}
+        cameraPosition={{ x: cameraX, width: game.width }}
       />
 
       {/* Mode Indicator */}
       {(attackMode || buildingPlacementMode) && (
-        <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg font-mono text-sm flex items-center gap-2 animate-pulse ${
-          attackMode ? "bg-red-900/90 text-red-100 border border-red-500/50" : "bg-amber-900/90 text-amber-100 border border-amber-500/50"
-        }`}>
+        <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg font-mono text-sm flex items-center gap-2 animate-pulse ${attackMode ? "bg-red-900/90 text-red-100 border border-red-500/50" : "bg-amber-900/90 text-amber-100 border border-amber-500/50"
+          }`}>
           {attackMode && <><Target className="w-4 h-4" /> Click on a <span className="text-red-300 font-bold">red highlighted</span> enemy to attack</>}
           {buildingPlacementMode && <><Building2 className="w-4 h-4" /> Click on a <span className="text-amber-300 font-bold">yellow highlighted</span> tile to build {buildingPlacementMode}</>}
           <Button size="sm" variant="ghost" className="ml-2 h-6 px-2 text-white/70 hover:text-white" onClick={() => { setAttackMode(false); setBuildingPlacementMode(null); }}>
@@ -541,16 +620,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         </div>
       )}
 
-      {/* Help Button */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="fixed bottom-8 left-8 z-50 h-10 w-10 rounded-full bg-slate-800/50 border border-slate-700 text-slate-400 hover:text-white hover:bg-slate-700"
-        onClick={() => setShowHelp(true)}
-        title="Help (H)"
-      >
-        <HelpCircle className="h-5 w-5" />
-      </Button>
+
 
       {/* Main Game Area */}
       <div className="relative z-10 flex h-screen items-center justify-center overflow-hidden">
@@ -602,6 +672,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         >
           {isLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
           End Turn
+          <span className="ml-2 text-xs opacity-70 bg-black/20 px-1.5 py-0.5 rounded">E</span>
         </Button>
       )}
 
@@ -629,25 +700,25 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         </div>
       )}
 
-      {/* Selected Tile Context Menu */}
+      {/* Selected Tile Context Menu - Bottom Left */}
       {selectedTileId && selectedTile && !attackMode && !buildingPlacementMode && (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[440px] bg-slate-900/98 backdrop-blur-xl border border-slate-700 p-4 rounded-xl shadow-[0_0_50px_rgba(0,0,0,0.5)] z-50 animate-in slide-in-from-bottom-4 zoom-in-95 ring-1 ring-white/10">
+        <div className="fixed left-4 bottom-4 w-[320px] bg-slate-900/98 backdrop-blur-xl border border-slate-700 p-4 rounded-xl shadow-[0_0_50px_rgba(0,0,0,0.5)] z-50 animate-in slide-in-from-bottom-4 ring-1 ring-white/10 max-h-[70vh] overflow-y-auto">
           <div className="flex items-start justify-between mb-3">
             <div>
               <h3 className="font-bold text-lg text-emerald-400 flex items-center gap-2 font-mono">
                 <Crosshair className="w-4 h-4" />
-                {selectedUnit ? selectedUnit.type.toUpperCase() : 
-                 selectedBuilding ? selectedBuilding.type.toUpperCase().replace("_", " ") : 
-                 selectedTile.type.toUpperCase()}
+                {selectedUnit ? selectedUnit.type.toUpperCase() :
+                  selectedBuilding ? selectedBuilding.type.toUpperCase().replace("_", " ") :
+                    selectedTile.type.toUpperCase()}
               </h3>
               <p className="text-xs text-slate-500 font-mono mt-1">
                 📍 [{selectedTile.x}, {selectedTile.y}]
                 {selectedTile.resource && <span className="ml-2 text-purple-400">💎 {selectedTile.resource}</span>}
               </p>
             </div>
-            <Button 
-              variant="ghost" 
-              size="sm" 
+            <Button
+              variant="ghost"
+              size="sm"
               className="h-6 w-6 p-0 rounded-full hover:bg-white/10 text-slate-400 hover:text-white"
               onClick={() => setSelectedTileId(null)}
               title="Close (Esc)"
@@ -655,7 +726,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
               <X className="w-4 h-4" />
             </Button>
           </div>
-          
+
           {/* Unit Actions */}
           {selectedUnit && isMyUnit && isMyTurn && (
             <div className="space-y-3">
@@ -665,7 +736,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
               </p>
 
               {/* Movement Controls */}
-              {selectedUnit.movesLeft > 0 && (
+              {selectedUnit.movesLeft > 0 ? (
                 <div>
                   <p className="text-xs text-slate-500 font-mono mb-2 flex items-center gap-1">
                     <Move className="w-3 h-3" /> MOVE (or use W/A/S/D)
@@ -677,12 +748,17 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                     <Button size="sm" variant="secondary" className="text-xs font-mono uppercase bg-slate-800 hover:bg-emerald-900/50 hover:text-emerald-300 border border-slate-700" onClick={() => handleMoveUnit("R")} disabled={isLoading}>→ Right</Button>
                   </div>
                 </div>
+              ) : (
+                <div className="text-xs text-amber-400/90 font-mono flex items-center gap-2 bg-amber-900/20 p-2 rounded border border-amber-500/20">
+                  <Move className="w-4 h-4" />
+                  <span>No moves remaining this turn</span>
+                </div>
               )}
 
               {/* Combat Unit Actions */}
               {selectedUnit.type !== "settler" && selectedUnit.type !== "worker" && selectedUnit.movesLeft > 0 && (
-                <Button 
-                  size="sm" 
+                <Button
+                  size="sm"
                   className="w-full text-xs font-mono uppercase bg-red-900/50 text-red-200 hover:bg-red-800 border border-red-500/30"
                   onClick={() => setAttackMode(true)}
                   disabled={isLoading}
@@ -694,14 +770,122 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
               {/* Settler Actions */}
               {selectedUnit.type === "settler" && (
-                <Button 
-                  size="sm" 
+                <Button
+                  size="sm"
                   className="w-full text-xs font-mono uppercase bg-emerald-900/50 text-emerald-200 hover:bg-emerald-800 border border-emerald-500/30"
                   onClick={handleFoundCity}
                   disabled={isLoading}
                 >
                   <Home className="w-4 h-4 mr-2" />
                   Found City Here
+                </Button>
+              )}
+
+              {/* Worker Actions */}
+              {selectedUnit.type === "worker" && selectedUnit.movesLeft > 0 && (
+                <div className="space-y-2">
+                  {/* Check if Worker is on a construction site they're building */}
+                  {selectedBuilding?.isConstructing && selectedBuilding?.workerId === selectedUnit._id ? (
+                    <Button
+                      size="sm"
+                      className="w-full text-xs font-mono uppercase bg-amber-900/50 text-amber-200 hover:bg-amber-800 border border-amber-500/30"
+                      onClick={handleContinueBuilding}
+                      disabled={isLoading}
+                    >
+                      <Hammer className="w-4 h-4 mr-2" />
+                      Continue Building ({selectedBuilding.buildProgress ?? 0}/{selectedBuilding.turnsToComplete ?? 1})
+                    </Button>
+                  ) : !selectedBuilding && !selectedTile?.buildingId && selectedTile?.type !== "water" && selectedTile?.type !== "bedrock" ? (
+                    <>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs font-mono uppercase bg-amber-900/50 text-amber-200 hover:bg-amber-800 border border-amber-500/30"
+                        onClick={() => setShowBuildMenu(!showBuildMenu)}
+                        disabled={isLoading || (selectedUnit.buildsLeft ?? 0) <= 0}
+                      >
+                        <Building2 className="w-4 h-4 mr-2" />
+                        {showBuildMenu ? "Hide Buildings" : "Build Here"}
+                      </Button>
+
+                      {/* Worker Build Menu */}
+                      {showBuildMenu && workerBuildableBuildings.length > 0 && (
+                        <div className="bg-slate-800/80 rounded-lg p-3 space-y-2 border border-slate-700/50">
+                          <p className="text-xs text-slate-400 font-mono flex items-center gap-1">
+                            <Building2 className="w-3 h-3" /> Select building to construct:
+                          </p>
+                          {workerBuildableBuildings.map((building) => (
+                            <Button
+                              key={building.buildingType}
+                              size="sm"
+                              variant="ghost"
+                              className={`w-full justify-between text-xs font-mono p-2 h-auto ${building.canAfford ? "hover:bg-amber-900/30" : "opacity-50 cursor-not-allowed"
+                                }`}
+                              onClick={() => building.canAfford && handlePlaceBuilding(building.buildingType)}
+                              disabled={isLoading || !building.canAfford}
+                            >
+                              <div className="text-left">
+                                <span className={building.canAfford ? "text-white" : "text-slate-500"}>
+                                  {building.buildingType.toUpperCase().replace("_", " ")}
+                                </span>
+                                <p className="text-[10px] text-slate-500 font-normal">
+                                  {BUILDING_INFO[building.buildingType]?.desc?.slice(0, 40)}...
+                                </p>
+                              </div>
+                              <span className={`text-xs ${building.canAfford ? "text-emerald-400" : "text-red-400"}`}>
+                                {BUILDING_INFO[building.buildingType]?.biomass && `${BUILDING_INFO[building.buildingType].biomass}🌿 `}
+                                {BUILDING_INFO[building.buildingType]?.ore && `${BUILDING_INFO[building.buildingType].ore}⚙️ `}
+                                {BUILDING_INFO[building.buildingType]?.flux && `${BUILDING_INFO[building.buildingType].flux}⚡`}
+                              </span>
+                            </Button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Worker Build Menu - Empty State */}
+                      {showBuildMenu && workerBuildableBuildings.length === 0 && (
+                        <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700/50 text-center">
+                          <p className="text-xs text-slate-400">No buildings available to construct.</p>
+                          <p className="text-[10px] text-slate-500 mt-1">Research tech to unlock more options.</p>
+                        </div>
+                      )}
+                    </>
+                  ) : null}
+
+                  {/* Collect Resource Button - Worker on resource tile */}
+                  {selectedTile?.resource && !selectedBuilding && (
+                    <Button
+                      size="sm"
+                      className="w-full text-xs font-mono uppercase bg-emerald-900/50 text-emerald-200 hover:bg-emerald-800 border border-emerald-500/30"
+                      onClick={handleCollectResource}
+                      disabled={isLoading}
+                    >
+                      <Pickaxe className="w-4 h-4 mr-2" />
+                      Harvest {selectedTile.resource.charAt(0).toUpperCase() + selectedTile.resource.slice(1)}
+                    </Button>
+                  )}
+
+                  {/* Worker builds remaining indicator */}
+                  <div className="text-xs text-amber-400/80 font-mono flex items-center gap-1 bg-amber-900/20 p-2 rounded border border-amber-500/20">
+                    <Hammer className="w-3 h-3" />
+                    Builds remaining: <span className="font-bold">{selectedUnit.buildsLeft ?? 0}</span>/3
+                  </div>
+                </div>
+              )}
+
+              {/* Marine Entrench Action */}
+              {selectedUnit.type === "marine" && isMyTurn && (
+                <Button
+                  size="sm"
+                  className={`w-full text-xs font-mono uppercase border ${selectedUnit.entrenched
+                    ? "bg-cyan-900/50 text-cyan-200 hover:bg-cyan-800 border-cyan-500/30"
+                    : "bg-slate-800/50 text-slate-300 hover:bg-slate-700 border-slate-500/30"
+                    }`}
+                  onClick={handleEntrench}
+                  disabled={isLoading || (selectedUnit.movesLeft > 0 && !selectedUnit.entrenched)}
+                  title={selectedUnit.movesLeft > 0 && !selectedUnit.entrenched ? "Must use all moves first" : ""}
+                >
+                  <Shield className="w-4 h-4 mr-2" />
+                  {selectedUnit.entrenched ? "Break Entrenchment" : "Entrench (+2 DEF)"}
                 </Button>
               )}
 
@@ -715,15 +899,23 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                   <Move className="w-3 h-3 text-blue-400" />
                   <span className="text-white">{selectedUnit.movesLeft}/{selectedUnit.maxMoves}</span>
                 </div>
-                <div className="flex items-center gap-1" title="Attack">
+                <div className="flex items-center gap-1" title="Attack Power">
                   <Swords className="w-3 h-3 text-orange-400" />
-                  <span className="text-slate-400">ATK</span>
+                  <span className="text-white">{UNIT_STATS[selectedUnit.type]?.atk ?? 0}</span>
                 </div>
                 <div className="flex items-center gap-1" title="Defense">
                   <Shield className="w-3 h-3 text-cyan-400" />
-                  <span className="text-slate-400">DEF</span>
+                  <span className="text-white">{UNIT_STATS[selectedUnit.type]?.def ?? 0}</span>
                 </div>
               </div>
+
+              {/* Artillery Range Indicator */}
+              {selectedUnit.type === "arty" && (
+                <div className="text-xs text-purple-300/90 font-mono flex items-center gap-2 bg-purple-900/30 p-2 rounded border border-purple-500/30">
+                  <Target className="w-3 h-3" />
+                  <span><strong>Arc Fire:</strong> Range 4 — Can hit over obstacles</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -743,8 +935,8 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
 
               {/* Spawn Units Button */}
               {(selectedBuilding.type === "city" || selectedBuilding.type === "factory" || selectedBuilding.type === "barracks" || selectedBuilding.type === "skyport") && (
-                <Button 
-                  size="sm" 
+                <Button
+                  size="sm"
                   className="w-full text-xs font-mono uppercase bg-blue-900/50 text-blue-200 hover:bg-blue-800 border border-blue-500/30"
                   onClick={() => setShowSpawnMenu(!showSpawnMenu)}
                 >
@@ -764,9 +956,8 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                       key={unit.unitType}
                       size="sm"
                       variant="ghost"
-                      className={`w-full justify-between text-xs font-mono p-2 h-auto ${
-                        unit.canAfford ? "hover:bg-blue-900/30" : "opacity-50 cursor-not-allowed"
-                      }`}
+                      className={`w-full justify-between text-xs font-mono p-2 h-auto ${unit.canAfford ? "hover:bg-blue-900/30" : "opacity-50 cursor-not-allowed"
+                        }`}
                       onClick={() => unit.canAfford && handleSpawnUnit(unit.unitType)}
                       disabled={isLoading || !unit.canAfford}
                     >
@@ -788,57 +979,15 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                 </div>
               )}
 
-              {/* Build Structures Button (City only) */}
-              {selectedBuilding.type === "city" && (
-                <Button 
-                  size="sm" 
-                  className="w-full text-xs font-mono uppercase bg-amber-900/50 text-amber-200 hover:bg-amber-800 border border-amber-500/30"
-                  onClick={() => setShowBuildMenu(!showBuildMenu)}
-                >
-                  <Building2 className="w-4 h-4 mr-2" />
-                  {showBuildMenu ? "Hide Buildings" : "Construct Building"}
-                </Button>
-              )}
-
-              {/* Build Menu */}
-              {showBuildMenu && buildableBuildings.length > 0 && (
-                <div className="bg-slate-800/80 rounded-lg p-3 space-y-2 border border-slate-700/50">
-                  <p className="text-xs text-slate-400 font-mono flex items-center gap-1">
-                    <Building2 className="w-3 h-3" /> Available Buildings:
-                  </p>
-                  {buildableBuildings.map((building) => (
-                    <Button
-                      key={building.buildingType}
-                      size="sm"
-                      variant="ghost"
-                      className={`w-full justify-between text-xs font-mono p-2 h-auto ${
-                        building.canAfford ? "hover:bg-amber-900/30" : "opacity-50 cursor-not-allowed"
-                      }`}
-                      onClick={() => {
-                        if (building.canAfford) {
-                          setBuildingPlacementMode(building.buildingType);
-                          setShowBuildMenu(false);
-                        }
-                      }}
-                      disabled={isLoading || !building.canAfford}
-                    >
-                      <div className="text-left">
-                        <span className={building.canAfford ? "text-white" : "text-slate-500"}>
-                          {building.buildingType.toUpperCase().replace("_", " ")}
-                        </span>
-                        <p className="text-[10px] text-slate-500 font-normal">
-                          {BUILDING_INFO[building.buildingType]?.desc?.slice(0, 40)}...
-                        </p>
-                      </div>
-                      <span className={`text-xs ${building.canAfford ? "text-emerald-400" : "text-red-400"}`}>
-                        {BUILDING_INFO[building.buildingType]?.biomass && `${BUILDING_INFO[building.buildingType].biomass}🌿 `}
-                        {BUILDING_INFO[building.buildingType]?.ore && `${BUILDING_INFO[building.buildingType].ore}⚙️ `}
-                        {BUILDING_INFO[building.buildingType]?.flux && `${BUILDING_INFO[building.buildingType].flux}⚡`}
-                      </span>
-                    </Button>
-                  ))}
+              {/* Spawn Menu - Empty State */}
+              {showSpawnMenu && spawnableUnits.length === 0 && (
+                <div className="bg-slate-800/80 rounded-lg p-3 border border-slate-700/50 text-center">
+                  <p className="text-xs text-slate-400">No units available to train.</p>
+                  <p className="text-[10px] text-slate-500 mt-1">Research tech or check resources.</p>
                 </div>
               )}
+
+
 
               {/* Building Info */}
               <div className="grid grid-cols-2 gap-2 text-xs font-mono bg-slate-800/50 rounded-lg p-2 border border-slate-700/50">
@@ -847,6 +996,12 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                   <Heart className="w-3 h-3 text-red-400" />
                   <span className="text-white">{selectedBuilding.hp}</span>
                 </div>
+                {selectedBuilding.isConstructing && (
+                  <div className="col-span-2 flex items-center gap-1 text-amber-400">
+                    <Hammer className="w-3 h-3" />
+                    <span>Building: {selectedBuilding.buildProgress ?? 0}/{selectedBuilding.turnsToComplete ?? 1} turns</span>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -860,11 +1015,19 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
               <p className="text-slate-400 text-[10px] mb-2 italic">
                 {UNIT_INFO[selectedUnit.type]?.desc}
               </p>
-              <div className="grid grid-cols-2 gap-2 text-slate-400">
+              <div className="grid grid-cols-4 gap-2 text-slate-400">
                 <div>Type: <span className="text-white">{selectedUnit.type}</span></div>
                 <div className="flex items-center gap-1">
                   <Heart className="w-3 h-3 text-red-400" />
                   <span className="text-white">{selectedUnit.hp}</span>
+                </div>
+                <div className="flex items-center gap-1" title="Attack">
+                  <Swords className="w-3 h-3 text-orange-400" />
+                  <span className="text-white">{UNIT_STATS[selectedUnit.type]?.atk ?? 0}</span>
+                </div>
+                <div className="flex items-center gap-1" title="Defense">
+                  <Shield className="w-3 h-3 text-cyan-400" />
+                  <span className="text-white">{UNIT_STATS[selectedUnit.type]?.def ?? 0}</span>
                 </div>
               </div>
             </div>
@@ -892,7 +1055,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
               ⏳ Wait for your turn to take actions
             </div>
           )}
-            
+
           {/* Decor Elements */}
           <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-emerald-500/50 rounded-tl-lg" />
           <div className="absolute top-0 right-0 w-2 h-2 border-t border-r border-emerald-500/50 rounded-tr-lg" />
@@ -923,28 +1086,26 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                 Your Flux: <span className="font-bold">{player.resources.flux}</span>
               </p>
             </div>
-            
+
             <div className="space-y-2">
               {techTree.map((tech) => (
-                <div 
+                <div
                   key={tech.techId}
-                  className={`p-3 rounded-lg border transition-all ${
-                    tech.alreadyResearched 
-                      ? "bg-emerald-900/30 border-emerald-500/50" 
-                      : tech.canResearch 
-                        ? "bg-slate-800/50 border-purple-500/30 hover:border-purple-500 cursor-pointer hover:bg-purple-900/20" 
-                        : "bg-slate-800/30 border-slate-700/50 opacity-60"
-                  }`}
-                  onClick={() => tech.canResearch && !tech.alreadyResearched && handleResearchTech(tech.techId)}
+                  className={`p-3 rounded-lg border transition-all ${tech.alreadyResearched
+                    ? "bg-emerald-900/30 border-emerald-500/50"
+                    : tech.canResearch && !isLoading
+                      ? "bg-slate-800/50 border-purple-500/30 hover:border-purple-500 cursor-pointer hover:bg-purple-900/20"
+                      : "bg-slate-800/30 border-slate-700/50 opacity-60"
+                    }`}
+                  onClick={() => tech.canResearch && !tech.alreadyResearched && !isLoading && handleResearchTech(tech.techId)}
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-sm font-bold">{tech.name}</span>
                     {tech.alreadyResearched ? (
                       <span className="text-xs text-emerald-400 flex items-center gap-1">✓ Researched</span>
                     ) : (
-                      <span className={`text-xs flex items-center gap-1 ${
-                        tech.canResearch ? "text-purple-400" : "text-slate-500"
-                      }`}>
+                      <span className={`text-xs flex items-center gap-1 ${tech.canResearch ? "text-purple-400" : "text-slate-500"
+                        }`}>
                         <Zap className="w-3 h-3" />
                         {tech.cost}
                       </span>
@@ -969,10 +1130,13 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
         </div>
       )}
 
-      {/* Help Panel */}
+      {/* Help Panel - Centered Landscape */}
       {showHelp && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-8" onClick={() => setShowHelp(false)}>
-          <div className="bg-slate-900 border border-slate-700 rounded-xl p-8 max-w-5xl w-full max-h-[90vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-xl p-8 max-w-5xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between mb-8 sticky top-0 bg-slate-900 z-10 py-2 border-b border-slate-800">
               <h2 className="text-3xl font-bold text-emerald-400 font-mono flex items-center gap-3">
                 <HelpCircle className="w-8 h-8" />
@@ -984,7 +1148,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-sm">
-              
+
               {/* Column 1: Getting Started & Resources */}
               <div className="space-y-6">
                 {/* Mission Objectives */}
@@ -994,7 +1158,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                   </h3>
                   <div className="space-y-3 text-slate-300 text-xs leading-relaxed">
                     <p>
-                      You command a colony on a <span className="text-cyan-400 font-bold">cylindrical world</span> - the map wraps horizontally! 
+                      You command a colony on a <span className="text-cyan-400 font-bold">cylindrical world</span> - the map wraps horizontally!
                       Start by founding a city with your Lander, then expand your empire.
                     </p>
                     <div className="bg-slate-900/50 p-3 rounded-lg space-y-2">
@@ -1041,35 +1205,35 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                         <span className="font-bold text-emerald-400 text-sm">Biomass</span>
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed">
-                        <span className="text-emerald-300 font-bold">Organic matter</span> used to sustain living units. 
+                        <span className="text-emerald-300 font-bold">Organic matter</span> used to sustain living units.
                         Required to train Workers, Marines, and Settlers.
                       </p>
                       <div className="mt-2 text-[10px] text-slate-400 bg-slate-900/50 p-2 rounded">
                         <span className="text-white">Sources:</span> Cities (+2/turn), Farms (+2/turn), Biomass deposits (one-time harvest)
                       </div>
                     </div>
-                    
+
                     <div className="bg-slate-700/20 p-3 rounded-lg border border-slate-500/20">
                       <div className="flex items-center gap-2 mb-2">
                         <Pickaxe className="w-6 h-6 text-slate-300" />
                         <span className="font-bold text-slate-300 text-sm">Ore</span>
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed">
-                        <span className="text-slate-200 font-bold">Raw minerals</span> for construction and manufacturing. 
+                        <span className="text-slate-200 font-bold">Raw minerals</span> for construction and manufacturing.
                         Required for all buildings and mechanical units (Rovers, Tanks, Artillery).
                       </p>
                       <div className="mt-2 text-[10px] text-slate-400 bg-slate-900/50 p-2 rounded">
                         <span className="text-white">Sources:</span> Cities (+2/turn), Mines (+2/turn, must be on Ore deposit)
                       </div>
                     </div>
-                    
+
                     <div className="bg-purple-900/20 p-3 rounded-lg border border-purple-500/20">
                       <div className="flex items-center gap-2 mb-2">
                         <Zap className="w-6 h-6 text-purple-400" />
                         <span className="font-bold text-purple-400 text-sm">Flux</span>
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed">
-                        <span className="text-purple-300 font-bold">High-energy plasma</span> used exclusively for technology research. 
+                        <span className="text-purple-300 font-bold">High-energy plasma</span> used exclusively for technology research.
                         The key to unlocking advanced units and The Ark Project.
                       </p>
                       <div className="mt-2 text-[10px] text-slate-400 bg-slate-900/50 p-2 rounded">
@@ -1089,51 +1253,51 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                   </h3>
                   <div className="space-y-2">
                     {[
-                      { 
-                        name: "Lander (Settler)", 
+                      {
+                        name: "Lander (Settler)",
                         cost: "Starting unit",
                         desc: "Your initial colonization unit. Can found ONE city on any surface tile. Consumed when city is founded. Cannot attack or defend - protect it!",
-                        icon: Home, 
+                        icon: Home,
                         color: "text-blue-400",
                         stats: "HP: 10 | Moves: 2 | No combat"
                       },
-                      { 
-                        name: "Worker", 
+                      {
+                        name: "Worker",
                         cost: "5 Biomass",
                         desc: "Essential for economy. Can build structures adjacent to your buildings: Farms (on surface), Mines (on ore), Solar Arrays (anywhere). Non-combatant - keep them safe!",
-                        icon: Pickaxe, 
+                        icon: Pickaxe,
                         color: "text-amber-400",
                         stats: "HP: 8 | Moves: 2 | No combat"
                       },
-                      { 
-                        name: "Marine", 
+                      {
+                        name: "Marine",
                         cost: "10 Biomass, 5 Ore",
                         desc: "Standard infantry. Good for defense and early aggression. ENTRENCH ability: If you don't move on your turn, gain +2 DEF next turn. Stack Marines for flanking bonuses!",
-                        icon: Shield, 
+                        icon: Shield,
                         color: "text-emerald-400",
                         stats: "HP: 15 | Moves: 2 | ATK: 4 | DEF: 3"
                       },
-                      { 
-                        name: "Rover", 
+                      {
+                        name: "Rover",
                         cost: "10 Ore",
                         desc: "Fast scout vehicle. Excellent vision range for finding enemies and resources. High mobility but fragile in combat. Use to harass enemy Workers or scout unexplored areas.",
-                        icon: Eye, 
+                        icon: Eye,
                         color: "text-cyan-400",
                         stats: "HP: 10 | Moves: 4 | ATK: 2 | DEF: 1 | Vision: 4"
                       },
-                      { 
-                        name: "Tank", 
+                      {
+                        name: "Tank",
                         cost: "25 Ore (requires Militarization tech)",
                         desc: "Heavy armored unit. Dominates in direct combat with high HP and attack. CRUSH ability: Destroys enemy buildings when moving onto them. Expensive but powerful.",
-                        icon: Crosshair, 
+                        icon: Crosshair,
                         color: "text-red-400",
                         stats: "HP: 30 | Moves: 2 | ATK: 8 | DEF: 5"
                       },
-                      { 
-                        name: "Artillery", 
+                      {
+                        name: "Artillery",
                         cost: "30 Ore, 10 Flux (requires Siege tech)",
                         desc: "Long-range siege unit. ARC FIRE: Can attack from 4 tiles away, over obstacles and units. Weak in close combat - protect with Marines. Essential for breaking fortified positions.",
-                        icon: Target, 
+                        icon: Target,
                         color: "text-purple-400",
                         stats: "HP: 12 | Moves: 1 | ATK: 6 | DEF: 1 | Range: 4"
                       },
@@ -1244,7 +1408,7 @@ export function GameView({ game, player, units, buildings, allPlayers }: GameVie
                 </section>
               </div>
             </div>
-            
+
             <div className="mt-8 pt-6 border-t border-slate-800 flex justify-between items-center">
               <div className="flex gap-4">
                 <div className="flex items-center gap-1 text-[10px] text-slate-500"><CircleDot className="w-3 h-3" /> Cylindrical World (Loops)</div>

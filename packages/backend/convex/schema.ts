@@ -56,6 +56,7 @@ export default defineSchema({
     movesLeft: v.number(),
     maxMoves: v.number(),
     entrenched: v.optional(v.boolean()), // Marine entrench ability
+    buildsLeft: v.optional(v.number()), // Worker building uses remaining (starts at 3)
   })
     .index("by_game", ["gameId"])
     .index("by_player", ["playerId"]),
@@ -67,6 +68,10 @@ export default defineSchema({
     x: v.number(),
     y: v.number(),
     hp: v.number(),
+    buildProgress: v.optional(v.number()), // Current build progress (0 to turnsToComplete)
+    turnsToComplete: v.optional(v.number()), // Total turns needed to build
+    workerId: v.optional(v.id("units")), // Worker currently building this
+    isConstructing: v.optional(v.boolean()), // True if building is under construction
   })
     .index("by_game", ["gameId"])
     .index("by_player", ["playerId"]),

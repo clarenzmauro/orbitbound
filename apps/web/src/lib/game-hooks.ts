@@ -72,9 +72,11 @@ export function useGameActions() {
   const spawnUnit = useMutation(api.units.spawnUnit);
   const attack = useMutation(api.combat.attack);
   const placeBuilding = useMutation(api.buildings.placeBuilding);
+  const continueBuilding = useMutation(api.buildings.continueBuilding);
   const collectResource = useMutation(api.economy.collectResource);
   const endTurn = useMutation(api.economy.endTurn);
   const researchTech = useMutation(api.tech.researchTech);
+  const toggleEntrench = useMutation(api.units.toggleEntrench);
 
   return {
     moveUnit: useCallback(
@@ -100,12 +102,17 @@ export function useGameActions() {
     placeBuilding: useCallback(
       (
         playerId: Id<"players">,
-        cityId: Id<"buildings">,
+        workerId: Id<"units">,
         buildingType: string,
         targetX: number,
         targetY: number
-      ) => placeBuilding({ playerId, cityId, buildingType, targetX, targetY }),
+      ) => placeBuilding({ playerId, workerId, buildingType, targetX, targetY }),
       [placeBuilding]
+    ),
+    continueBuilding: useCallback(
+      (playerId: Id<"players">, workerId: Id<"units">) =>
+        continueBuilding({ playerId, workerId }),
+      [continueBuilding]
     ),
     collectResource: useCallback(
       (playerId: Id<"players">, x: number, y: number) =>
@@ -121,6 +128,11 @@ export function useGameActions() {
       (playerId: Id<"players">, techId: string) =>
         researchTech({ playerId, techId }),
       [researchTech]
+    ),
+    toggleEntrench: useCallback(
+      (unitId: Id<"units">, playerId: Id<"players">, entrench: boolean) =>
+        toggleEntrench({ unitId, playerId, entrench }),
+      [toggleEntrench]
     ),
   };
 }
@@ -202,6 +214,30 @@ export function useBuildableBuildings(playerId: Id<"players"> | undefined, cityI
         cost: b.cost,
         canAfford: b.canAfford,
         terrainRequired: b.terrainRequired,
+      }));
+  }, [buildings]);
+}
+
+/**
+ * Get buildings a Worker can construct (no city required)
+ */
+export function useWorkerBuildableBuildings(playerId: Id<"players"> | undefined) {
+  const buildings = useQuery(
+    api.buildings.getWorkerBuildableBuildings,
+    playerId ? { playerId } : "skip"
+  );
+
+  return useMemo(() => {
+    if (!buildings) return [];
+    return buildings
+      .filter(b => b.techUnlocked)
+      .map(b => ({
+        buildingType: b.type,
+        name: b.name,
+        cost: b.cost,
+        canAfford: b.canAfford,
+        terrainRequired: b.terrainRequired,
+        turnsToComplete: b.turnsToComplete,
       }));
   }, [buildings]);
 }

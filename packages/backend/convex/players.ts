@@ -103,19 +103,26 @@ const spawnSettler = async (ctx: MutationCtx, game: Doc<"games">, playerId: Id<"
 
 const findSpawnTile = (game: Doc<"games">, map: Doc<"games">["map"]) => {
   const preferredY = SKY_ROWS;
-  for (let offset = 0; offset < game.width; offset += 1) {
-    const x = (offset * 3) % game.width;
+  
+  // Collect all valid spawn tiles first
+  const validSpawns: { x: number; y: number }[] = [];
+  
+  for (let x = 0; x < game.width; x++) {
     const idx = coordToIndex(game.width, x, preferredY);
     const tile = map[idx];
     if (
-      (tile.type === "surface" || tile.type === "dirt" || tile.type === "sky") &&
+      (tile.type === "surface" || tile.type === "dirt") &&
       tile.unitId === undefined &&
       tile.buildingId === undefined
     ) {
-      return { x, y: preferredY };
+      validSpawns.push({ x, y: preferredY });
     }
   }
-  return undefined;
+  
+  // Return a random valid spawn tile
+  if (validSpawns.length === 0) return undefined;
+  const randomIndex = Math.floor(Math.random() * validSpawns.length);
+  return validSpawns[randomIndex];
 };
 
 /**

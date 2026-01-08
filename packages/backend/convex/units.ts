@@ -88,8 +88,10 @@ export const move = mutation({
 
     // Check hazards (magma)
     if (terrainDef.hazard) {
-      // TODO: Check for Heat Shield tech
-      throw new Error("Hazardous terrain! Requires Heat Shield technology.");
+      const player = await getPlayerOrThrow(ctx, args.playerId);
+      if (!player.techUnlocked.includes("heat_shield")) {
+        throw new Error("Hazardous terrain! Research Heat Shield technology to cross Magma.");
+      }
     }
 
     const updatedMap = [...game.map];
@@ -265,6 +267,7 @@ export const spawnUnit = mutation({
       hp: unitDef.hp,
       movesLeft: unitDef.maxMoves,
       maxMoves: unitDef.maxMoves,
+      buildsLeft: unitDef.buildsLeft,
     });
 
     const mapCopy = [...game.map];
@@ -283,6 +286,41 @@ export const spawnUnit = mutation({
     ]);
 
     return unitId;
+  },
+});
+
+export const toggleEntrench = mutation({
+  args: {
+    unitId: v.id("units"),
+    playerId: v.id("players"),
+    entrench: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const unit = await ctx.db.get(args.unitId);
+    if (!unit) {
+      throw new Error("Unit not found");
+    }
+
+    if (unit.playerId !== args.playerId) {
+      throw new Error("You do not control this unit");
+    }
+
+    const game = await getGameOrThrow(ctx, unit.gameId);
+    assertPlayerTurn(game, args.playerId);
+
+    if (unit.type !== "marine") {
+      throw new Error("Only Marines can entrench");
+    }
+
+    if (args.entrench && unit.movesLeft > 0) {
+      throw new Error("Must use all movement points to entrench (move until 0 moves left)");
+    }
+
+    await ctx.db.patch(unit._id, {
+      entrenched: args.entrench,
+    });
+
+    return { entrenched: args.entrench };
   },
 });
 
@@ -306,10 +344,14 @@ export const getUnitActions = query({
     const game = await ctx.db.get(unit.gameId);
     const isMyTurn = game?.playerOrder[game.activePlayerIndex] === args.playerId;
 
+    const canEntrench = isOwner && isMyTurn && unit.type === "marine" && unit.movesLeft === 0;
+
     return {
       canMove: isOwner && isMyTurn && unit.movesLeft > 0,
       canAttack: isOwner && isMyTurn && unit.movesLeft > 0 && unitDef.atk > 0,
       canFoundCity: isOwner && isMyTurn && unit.type === "settler",
+      canEntrench: unit.type === "marine",
+      isEntrenched: unit.entrenched ?? false,
       abilities: unitDef.abilities ?? [],
       stats: {
         hp: unit.hp,

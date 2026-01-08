@@ -9,6 +9,7 @@ import { v } from "convex/values";
 import { internalAction, internalMutation } from "../_generated/server";
 import { internal, api } from "../_generated/api";
 import { AI_TURN_DELAY_MS, AI_WEIGHTS } from "./constants";
+import { BUILDING_DEFS } from "../lib/constants";
 import {
   analyzeGameState,
   findMoveToward,
@@ -168,23 +169,46 @@ export const runAITurn = internalAction({
       }
 
       // ─────────────────────────────────────────────────────────────────────
-      // Priority 4: Build structures from cities (only if affordable)
+      // Priority 4: Build structures using Workers (only if affordable)
       // ─────────────────────────────────────────────────────────────────────
-      // Re-fetch player to get updated resources
       const updatedPlayer = await ctx.runQuery(internal.ai.queries.getPlayerForAI, { playerId });
       if (updatedPlayer) {
-        const myCities = myBuildings.filter((b) => b.type === "city");
-        
-        for (const city of myCities) {
-          const buildable = await ctx.runQuery(api.buildings.getBuildableBuildings, {
-            playerId,
-            cityId: city._id,
-          });
+        const myWorkers = myUnits.filter((u) => u.type === "worker");
 
-          // Filter to only affordable buildings with tech unlocked
-          const affordableBuildings = buildable.filter((b) => b.canAfford && b.techUnlocked);
+        // Get buildable buildings
+        const cityId = myBuildings.find((b) => b.type === "city")?._id;
+        const buildable = cityId ? await ctx.runQuery(api.buildings.getBuildableBuildings, {
+          playerId,
+          cityId,
+        }) : [];
 
-          if (affordableBuildings.length > 0 && Math.random() > weights.randomness) {
+        // Filter to only affordable buildings with tech unlocked
+        const affordableBuildings = buildable.filter((b) => b.canAfford && b.techUnlocked);
+
+        for (const worker of myWorkers) {
+          // Skip if worker has no builds left
+          if (!worker.buildsLeft || worker.buildsLeft <= 0) continue;
+
+          // Check if worker is on a construction site
+          const workerTileIdx = worker.y * game.width + worker.x;
+          const workerTile = game.map[workerTileIdx];
+
+          if (workerTile.buildingId) {
+            // If building is under construction, continue it
+            try {
+              await ctx.runMutation(api.buildings.continueBuilding, {
+                playerId,
+                workerId: worker._id,
+              });
+              console.log(`[AI] ${player.aiName} continued construction`);
+              continue;
+            } catch {
+              // Continue failed (building not under construction or wrong worker)
+            }
+          }
+
+          // Otherwise, start new construction if affordable
+          if (affordableBuildings.length > 0 && Math.random() > weights.randomness * 0.7) {
             const toBuild = chooseBuildingToBuild(
               analysis,
               updatedPlayer,
@@ -192,28 +216,53 @@ export const runAITurn = internalAction({
             );
 
             if (toBuild) {
-              // Find valid adjacent tile
+              const buildingDef = BUILDING_DEFS[toBuild];
+              if (!buildingDef) continue;
+
+              // Check if current tile is valid
+              if (workerTile.unitId === worker._id && !workerTile.buildingId &&
+                  workerTile.type !== "bedrock" && workerTile.type !== "water" && workerTile.type !== "sky") {
+                try {
+                  await ctx.runMutation(api.buildings.placeBuilding, {
+                    playerId,
+                    workerId: worker._id,
+                    buildingType: toBuild,
+                    targetX: worker.x,
+                    targetY: worker.y,
+                  });
+                  console.log(`[AI] ${player.aiName} started building ${toBuild}`);
+                } catch {
+                  // Start failed
+                }
+                continue;
+              }
+
+              // Otherwise move worker to adjacent empty tile
               const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]] as const;
               for (const [dx, dy] of dirs) {
-                const nx = (city.x + dx + game.width) % game.width;
-                const ny = Math.max(0, Math.min(game.height - 1, city.y + dy));
+                const nx = (worker.x + dx + game.width) % game.width;
+                const ny = Math.max(0, Math.min(game.height - 1, worker.y + dy));
                 const idx = ny * game.width + nx;
                 const tile = game.map[idx];
 
-                if (tile && !tile.buildingId && !tile.unitId && 
+                if (tile && !tile.buildingId && !tile.unitId &&
                     tile.type !== "bedrock" && tile.type !== "water" && tile.type !== "sky") {
-                  try {
-                    await ctx.runMutation(api.buildings.placeBuilding, {
-                      playerId,
-                      cityId: city._id,
-                      buildingType: toBuild,
-                      targetX: nx,
-                      targetY: ny,
-                    });
-                    console.log(`[AI] ${player.aiName} built a ${toBuild}`);
+                  const validTerrain = !buildingDef.terrainRequired ||
+                    buildingDef.terrainRequired.includes(tile.type);
+                  const validResource = !buildingDef.requiresResource ||
+                    tile.resource === buildingDef.requiresResource;
+
+                  if (validTerrain && validResource) {
+                    try {
+                      await ctx.runMutation(api.units.move, {
+                        unitId: worker._id,
+                        playerId,
+                        direction: directionToCommand(dx, dy),
+                      });
+                    } catch {
+                      // Move failed
+                    }
                     break;
-                  } catch {
-                    // Build failed, try next spot
                   }
                 }
               }
